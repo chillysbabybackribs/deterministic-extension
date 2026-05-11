@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.pnp.*
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.crx
+
+# Logs and diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test and tooling output
+coverage/
+.cache/
+.vite/
+playwright-report/
+test-results/
+
+# Local editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Browser/dev profiles
+chrome-profile/
+.local-chromium/

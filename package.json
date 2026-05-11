@@ -1,0 +1,27 @@
+{
+  "name": "ohmygod",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Chrome sidepanel assistant with direct Claude Haiku 4.5 browser tools.",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "lucide-react": "^0.468.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "vite": "^5.0.10"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "@types/node": "^20.10.5",
+    "@types/react": "^18.2.45",
+    "@types/react-dom": "^18.2.18",
+    "typescript": "^5.3.3"
+  }
+}
