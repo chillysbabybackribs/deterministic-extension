@@ -357,7 +357,7 @@ button {
 }
 
 .research-progress-card.open {
-  max-height: min(235px, 36vh);
+  max-height: min(255px, 38vh);
   border-color: var(--line);
   border-bottom-color: var(--line-soft);
   opacity: 1;
@@ -369,8 +369,9 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 9px 10px 7px;
+  padding: 9px 10px 8px;
   border-bottom: 1px solid var(--line-soft);
+  background: rgb(17 17 19 / 52%);
 }
 
 .research-progress-title,
@@ -383,9 +384,9 @@ button {
 .research-progress-title {
   gap: 7px;
   min-width: 0;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 750;
 }
 
 .research-progress-title span {
@@ -399,8 +400,55 @@ button {
   gap: 6px;
   color: var(--text-muted);
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 700;
   text-transform: uppercase;
+}
+
+.research-status-chip,
+.research-line-status {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 3%);
+  color: var(--text-muted);
+  font-weight: 750;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.research-status-chip {
+  padding: 3px 7px;
+}
+
+.research-line-status {
+  padding: 2px 6px;
+  font-size: 9px;
+}
+
+.research-status-chip.status-running,
+.research-line-status.status-running {
+  border-color: rgb(138 164 255 / 30%);
+  color: var(--focus);
+}
+
+.research-status-chip.status-completed,
+.research-line-status.status-completed {
+  border-color: rgb(232 232 234 / 18%);
+  color: var(--text-secondary);
+}
+
+.research-status-chip.status-partial,
+.research-status-chip.status-skipped,
+.research-line-status.status-partial,
+.research-line-status.status-skipped {
+  border-color: rgb(226 184 103 / 28%);
+  color: var(--warning);
+}
+
+.research-status-chip.status-failed,
+.research-line-status.status-failed {
+  border-color: rgb(255 123 114 / 32%);
+  color: var(--error);
 }
 
 .research-progress-body {
@@ -418,20 +466,24 @@ button {
 
 .research-progress-line {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr);
-  gap: 8px;
-  padding: 6px 0;
-  border-bottom: 1px solid rgb(255 255 255 / 4%);
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 6px 7px 6px 4px;
+  opacity: 0.76;
 }
 
-.research-progress-line:last-child {
-  border-bottom: 0;
+.research-progress-line.current {
+  border-color: var(--line-soft);
+  background: rgb(255 255 255 / 3%);
+  opacity: 1;
 }
 
 .research-dot {
   width: 7px;
   height: 7px;
-  margin-top: 5px;
+  margin: 6px auto 0;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   background: var(--surface-raised);
@@ -462,7 +514,7 @@ button {
 .research-line-copy {
   display: grid;
   min-width: 0;
-  gap: 2px;
+  gap: 3px;
 }
 
 .research-line-top {
@@ -473,32 +525,50 @@ button {
 .research-line-label {
   min-width: 0;
   overflow: hidden;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.research-line-top time {
-  flex: 0 0 auto;
+.research-progress-line.current .research-line-label {
+  color: var(--text-primary);
+  font-weight: 800;
+}
+
+.research-line-detail {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.research-progress-line:not(.current) .research-line-detail {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.research-line-subrow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
   color: var(--text-subtle);
   font-size: 10px;
 }
 
-.research-line-detail,
-.research-line-url {
-  overflow-wrap: anywhere;
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.research-line-detail {
-  color: var(--text-secondary);
+.research-line-subrow time {
+  flex: 0 0 auto;
 }
 
 .research-line-url {
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .research-progress-line.level-warning .research-line-detail,
