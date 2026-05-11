@@ -134,6 +134,7 @@ type SearchIntent = {
   freshness: boolean;
   architecture: boolean;
   socialDiscussion: boolean;
+  video: boolean;
 };
 
 type SourceClass =
@@ -317,7 +318,7 @@ export function formatDeterministicResearchForHaiku(bundle: DeterministicResearc
       return [
         `Source ${card.rank} (${card.status})`,
         `Title: ${card.title}`,
-        `URL: ${card.url}`,
+        `Source link: [${escapeMarkdownLinkText(citationLabelForCard(card))}](${card.url})`,
         card.publishedDate ? `Date: ${card.publishedDate}` : undefined,
         `Selected because: ${card.reasonSelected}`,
         card.warning ? `Warning: ${card.warning}` : undefined,
@@ -328,18 +329,58 @@ export function formatDeterministicResearchForHaiku(bundle: DeterministicResearc
     .join("\n\n---\n\n");
 
   return clip([
-	    "Deterministic evidence cards. No raw page text was provided.",
-	    `Original user prompt: ${bundle.originalPrompt}`,
-	    `Compiled search query: ${bundle.searchQuery}`,
-	    `Sufficiency: ${bundle.sufficiency.status} (coverage ${bundle.sufficiency.coverageScore}; ${bundle.sufficiency.usableSourceCount} usable source(s); ${bundle.sufficiency.diverseDomainCount} domain(s); ${bundle.sufficiency.relevantPassageCount} passage(s))`,
-	    bundle.sufficiency.requirements.length
-	      ? `Sufficiency requirements: ${bundle.sufficiency.requirements.map((requirement) => `${requirement.passed ? "pass" : "missing"} ${requirement.label}: ${requirement.summary}`).join(" | ")}`
-	      : undefined,
-	    bundle.warnings.length ? `Warnings: ${bundle.warnings.slice(0, 4).join(" | ")}` : undefined,
-	    "",
+    "Deterministic evidence cards. No raw page text was provided.",
+    `Original user prompt: ${bundle.originalPrompt}`,
+    `Compiled search query: ${bundle.searchQuery}`,
+    `Sufficiency: ${bundle.sufficiency.status} (coverage ${bundle.sufficiency.coverageScore}; ${bundle.sufficiency.usableSourceCount} usable source(s); ${bundle.sufficiency.diverseDomainCount} domain(s); ${bundle.sufficiency.relevantPassageCount} passage(s))`,
+    bundle.sufficiency.requirements.length
+      ? `Sufficiency requirements: ${bundle.sufficiency.requirements.map((requirement) => `${requirement.passed ? "pass" : "missing"} ${requirement.label}: ${requirement.summary}`).join(" | ")}`
+      : undefined,
+    bundle.warnings.length ? `Warnings: ${bundle.warnings.slice(0, 4).join(" | ")}` : undefined,
+    "",
     "Evidence:",
     cardBlocks || "No usable evidence cards were extracted."
-	  ].filter((line) => line !== undefined).join("\n"), MAX_SOURCE_PROMPT_CHARS);
+  ].filter((line) => line !== undefined).join("\n"), MAX_SOURCE_PROMPT_CHARS);
+}
+
+function citationLabelForCard(card: DeterministicEvidenceCard): string {
+  const domain = card.domain ?? domainFromUrl(card.url) ?? "";
+  const url = safeUrl(card.url);
+  const path = url?.pathname.toLowerCase() ?? "";
+  const title = card.title.toLowerCase();
+
+  if (domainMatches(domain, "github.com")) {
+    return "GitHub repository";
+  }
+  if (domainMatches(domain, "reddit.com") || domainMatches(domain, "news.ycombinator.com")) {
+    return "Community discussion";
+  }
+  if (/\b(api reference|reference)\b/i.test(card.title) || path.includes("api-reference") || path.includes("/reference")) {
+    return "API reference";
+  }
+  if (/\b(changelog|release notes?|releases?)\b/i.test(card.title) || /\/(changelog|releases?|release-notes)\b/.test(path)) {
+    return "Changelog";
+  }
+  if (/\b(docs?|documentation|guide|guides|developer|developers)\b/i.test(card.title) || /\/(docs?|documentation|guides?|developers?)\b/.test(path)) {
+    return "Official docs";
+  }
+  if (classifySource({
+    id: "citation",
+    title: card.title,
+    url: card.url,
+    domain: card.domain
+  }) === "official") {
+    return "Official overview";
+  }
+  if (title.includes("overview") || path === "/" || path === "") {
+    return "Official overview";
+  }
+
+  return clip(card.title.replace(/\s*[-|]\s*[^-|]+$/, "").trim() || domain || "Source", 64);
+}
+
+function escapeMarkdownLinkText(value: string): string {
+  return value.replace(/[[\]\\]/g, "\\$&");
 }
 
 async function collectDeterministicResearchSources(
@@ -873,13 +914,16 @@ function extractPublishedDate(source: DeterministicResearchSource, cleanedText: 
 function buildSearchIntent(userMessage: string, query: string): SearchIntent {
   const prompt = userMessage.trim();
   const socialDiscussion = hasSocialDiscussionIntent(prompt);
+  const video = hasExplicitVideoIntent(prompt);
   const architecture = isArchitectureQuestion(prompt) ||
     /\b(deterministic|reliable|repeatable|reproducible)\b/i.test(prompt) &&
       /\b(search|browser|web|pipeline|process|automation|crawler|scraper|retrieval|extraction)\b/i.test(prompt);
   const terms = uniqueStrings([
     ...extractSearchTerms(prompt),
     ...extractSearchTerms(query)
-  ]).slice(0, 24);
+  ])
+    .filter((term) => video || !VIDEO_INTENT_TERMS.has(term))
+    .slice(0, 24);
   const explicitDomains = extractExplicitDomains(prompt);
   const aliasMatches = SITE_ALIASES.filter((alias) =>
     alias.patterns.some((pattern) => pattern.test(prompt))
@@ -898,11 +942,12 @@ function buildSearchIntent(userMessage: string, query: string): SearchIntent {
     query,
     terms,
     namedDomains,
-    namedSiteNames,
-    freshness: needsFreshness(prompt) || needsFreshness(query) || socialDiscussion,
-    architecture,
-    socialDiscussion
-  };
+	    namedSiteNames,
+	    freshness: needsFreshness(prompt) || needsFreshness(query) || socialDiscussion,
+	    architecture,
+	    socialDiscussion,
+	    video
+	  };
 }
 
 function hasNamedSiteIntent(value: string): boolean {
@@ -913,6 +958,10 @@ function hasNamedSiteIntent(value: string): boolean {
 function hasSocialDiscussionIntent(value: string): boolean {
   return /\b(users?|people|developers?|devs?|community|reddit|forum|forums|comments?|posts?|threads?|discussion|discussing|saying|sentiment|reviews?|reactions?)\b/i.test(value) &&
     /\b(saying|think|thinking|feel|feeling|reacting|reaction|sentiment|reviews?|comments?|posts?|threads?|discussion|about|on)\b/i.test(value);
+}
+
+function hasExplicitVideoIntent(value: string): boolean {
+  return /\b(video|videos|youtube|youtu\.be|watch|transcript|transcripts|clip|clips|webinar|talk|lecture|presentation|demo)\b/i.test(value);
 }
 
 function hasExplicitResearchIntent(value: string): boolean {
@@ -1018,6 +1067,7 @@ function rankSearchCandidates(
       score: scoreCandidate(candidate, intent, index),
       index
     }))
+    .filter((item) => intent.video || !isVideoCandidate(item.candidate))
     .filter((item) => item.score > -80)
     .sort((a, b) => b.score - a.score || a.index - b.index);
 
@@ -1077,12 +1127,11 @@ function scoreCandidate(candidate: SearchCandidate, intent: SearchIntent, index:
 function sourceClassAdjustment(candidate: SearchCandidate, intent: SearchIntent): number {
   const sourceClass = classifySource(candidate);
   const haystack = `${candidate.title} ${candidate.url} ${candidate.snippet ?? ""}`.toLowerCase();
-  const requestedVideo = /\b(video|youtube|watch)\b/i.test(intent.prompt);
   const requestedSocial = intent.socialDiscussion || intent.namedDomains.some((domain) =>
     ["reddit.com", "x.com", "twitter.com", "news.ycombinator.com"].some((target) => domainMatches(domain, target))
   );
 
-  if (requestedVideo && sourceClass === "video") {
+  if (intent.video && sourceClass === "video") {
     return 50;
   }
 
@@ -1115,7 +1164,7 @@ function sourceClassAdjustment(candidate: SearchCandidate, intent: SearchIntent)
     return 12;
   }
   if (sourceClass === "video") {
-    return requestedVideo || haystack.includes("tutorial") ? -5 : -35;
+    return intent.video ? 12 : -120;
   }
   if (sourceClass === "social") {
     return requestedSocial ? 30 : -25;
@@ -1162,6 +1211,18 @@ function classifySource(candidate: SearchCandidate): SourceClass {
   }
 
   return "generic";
+}
+
+function isVideoCandidate(candidate: SearchCandidate): boolean {
+  if (classifySource(candidate) === "video") {
+    return true;
+  }
+
+  const url = safeUrl(candidate.url);
+  const path = url?.pathname.toLowerCase() ?? "";
+  const haystack = `${candidate.title} ${candidate.url} ${candidate.snippet ?? ""}`.toLowerCase();
+  return /\b(youtube|youtu\.be|vimeo|watch video|video result|videos? -|webinar|full video|clip|clips)\b/i.test(haystack) ||
+    /\/(watch|videos?|shorts|embed)\b/.test(path);
 }
 
 function selectDiverseCandidates(
@@ -1255,7 +1316,8 @@ async function findTopSearchCandidates(
   }
 
   const seededCandidates = seedCandidatesFromIntent(intent);
-  const candidatePool = mergeCandidates(backgroundGrab.candidates, visibleCandidates, seededCandidates);
+  const candidatePool = mergeCandidates(backgroundGrab.candidates, visibleCandidates, seededCandidates)
+    .filter((candidate) => intent.video || !isVideoCandidate(candidate));
   const rankedCandidates = rankSearchCandidates(candidatePool, intent, limit).slice(0, limit);
   if (rankedCandidates.length < Math.min(CANDIDATE_BATCH_SIZE, limit)) {
     warnings.push(
@@ -2952,6 +3014,22 @@ const QUERY_FILLER_WORDS = new Set([
   "way",
   "ways",
   "would"
+]);
+
+const VIDEO_INTENT_TERMS = new Set([
+  "clip",
+  "clips",
+  "demo",
+  "lecture",
+  "presentation",
+  "talk",
+  "transcript",
+  "transcripts",
+  "video",
+  "videos",
+  "watch",
+  "webinar",
+  "youtube"
 ]);
 
 const BOILERPLATE_LINE_PATTERN =

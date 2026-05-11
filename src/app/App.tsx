@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createChatMessage,
   type ChatContextMessage,
@@ -39,6 +39,8 @@ export function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const runtimeAvailable = useMemo(() => typeof chrome !== "undefined" && Boolean(chrome.runtime?.sendMessage), []);
+  const progressClosedByUserRef = useRef(false);
+  const progressRetractedForResponseRef = useRef(false);
 
   useEffect(() => {
     loadSettings().then(setSettings).catch(() => setSettings(DEFAULT_APP_SETTINGS));
@@ -63,6 +65,8 @@ export function App() {
     setLatestEvidence(undefined);
     setProgressEvents([]);
     setProgressOpen(true);
+    progressClosedByUserRef.current = false;
+    progressRetractedForResponseRef.current = false;
 
     try {
       if (!settings.provider.apiKey?.trim()) {
@@ -82,7 +86,15 @@ export function App() {
         },
         (event) => {
           setProgressEvents((current) => [...current, event].slice(-160));
-          setProgressOpen(true);
+          if (isResponseStartProgressEvent(event)) {
+            progressRetractedForResponseRef.current = true;
+            setProgressOpen(false);
+            return;
+          }
+
+          if (!progressRetractedForResponseRef.current && !progressClosedByUserRef.current) {
+            setProgressOpen(true);
+          }
         }
       );
 
@@ -120,13 +132,21 @@ export function App() {
         <ChatWindow
           messages={messages}
           busy={busy}
-	          activity={activity}
-	          evidence={latestEvidence}
-	          progressEvents={progressEvents}
-	          progressOpen={progressOpen}
-	          showEvidence={settings.dev.showEvidencePreview}
-	          onSend={handleSend}
-	        />
+          activity={activity}
+          evidence={latestEvidence}
+          progressEvents={progressEvents}
+          progressOpen={progressOpen}
+          showEvidence={settings.dev.showEvidencePreview}
+          onCloseProgress={() => {
+            progressClosedByUserRef.current = true;
+            setProgressOpen(false);
+          }}
+          onOpenProgress={() => {
+            progressClosedByUserRef.current = false;
+            setProgressOpen(true);
+          }}
+          onSend={handleSend}
+        />
       }
       settings={
         settingsOpen ? (
@@ -135,6 +155,10 @@ export function App() {
       }
     />
   );
+}
+
+function isResponseStartProgressEvent(event: RunProgressEvent): boolean {
+  return event.label.toLowerCase() === "synthesis" && event.status === "running";
 }
 
 function chatContextFromMessages(messages: ChatMessage[]): ChatContextMessage[] {

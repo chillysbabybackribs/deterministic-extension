@@ -17,6 +17,8 @@ export type ChatWindowProps = {
   progressEvents: RunProgressEvent[];
   progressOpen: boolean;
   showEvidence: boolean;
+  onCloseProgress: () => void;
+  onOpenProgress: () => void;
   onSend: (message: string) => void | Promise<void>;
 };
 
@@ -28,6 +30,8 @@ export function ChatWindow({
   progressEvents,
   progressOpen,
   showEvidence,
+  onCloseProgress,
+  onOpenProgress,
   onSend
 }: ChatWindowProps) {
   const [activityOpen, setActivityOpen] = useState(false);
@@ -36,18 +40,31 @@ export function ChatWindow({
   function toggleActivity() {
     setActivityOpen((open) => !open);
     setEvidenceOpen(false);
+    onCloseProgress();
   }
 
   function toggleEvidence() {
     setEvidenceOpen((open) => !open);
     setActivityOpen(false);
+    onCloseProgress();
+  }
+
+  function openProgress() {
+    setActivityOpen(false);
+    setEvidenceOpen(false);
+    onOpenProgress();
   }
 
   return (
     <section className="chat-window">
       <MessageList messages={messages} busy={busy} />
       <div className="chat-bottom-anchor">
-        <ResearchProgressCard events={progressEvents} open={progressOpen && progressEvents.length > 0} />
+        <ResearchProgressCard
+          events={progressEvents}
+          open={progressOpen && progressEvents.length > 0}
+          onClose={onCloseProgress}
+          onOpen={openProgress}
+        />
         <ActivityDrawer entries={activity} open={activityOpen} onClose={() => setActivityOpen(false)} />
         {showEvidence ? (
           <EvidenceDrawer packet={evidence} open={evidenceOpen} onClose={() => setEvidenceOpen(false)} />

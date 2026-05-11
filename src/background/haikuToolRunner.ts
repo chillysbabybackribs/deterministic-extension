@@ -383,7 +383,9 @@ function buildResearchSynthesisMessages(
         "",
         sourceBundle,
         "",
-        "Answer the user from the deterministic source bundle above. Give the best-supported answer from the extracted evidence, cite or name source URLs when they matter, and clearly label uncertainty only where a claim is not directly supported."
+        "Answer the user from the deterministic source bundle above. Give the best-supported answer from the extracted evidence.",
+        "When listing or citing sources, use clean markdown links with descriptive labels from the source bundle, like [Official overview](https://example.com). Do not show naked URLs unless the URL itself is the answer.",
+        "Clearly label uncertainty only where a claim is not directly supported."
       ].join("\n")
     }
   ];
@@ -435,6 +437,7 @@ function buildResearchSynthesisSystemPrompt(): string {
     "Use only that bundle plus conversation context for web/current claims.",
     "Do not infer exact prices, rankings, post titles, dates, or user sentiment unless present in evidence cards.",
     "Do not claim you browsed. If evidence is limited, still answer from the strongest extracted evidence and mark unsupported gaps precisely.",
+    "Use descriptive markdown source links instead of naked URLs.",
     "Answer concisely and cite/source URLs when useful."
   ].join("\n");
 }
