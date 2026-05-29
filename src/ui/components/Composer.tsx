@@ -1,28 +1,24 @@
-import { Activity, Database, Send } from "lucide-react";
+import { Pause, Play, Plus, Square } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 export type ComposerProps = {
   busy: boolean;
-  activityCount: number;
-  activityOpen: boolean;
-  evidenceCount: number;
-  evidenceOpen: boolean;
-  showEvidence: boolean;
-  onToggleActivity: () => void;
-  onToggleEvidence: () => void;
+  runState: "idle" | "running" | "paused" | "stopping";
+  onNewChat: () => void;
+  onPauseRun: () => void;
+  onResumeRun: () => void;
   onSend: (message: string) => void | Promise<void>;
+  onStopRun: () => void;
 };
 
 export function Composer({
   busy,
-  activityCount,
-  activityOpen,
-  evidenceCount,
-  evidenceOpen,
-  showEvidence,
-  onToggleActivity,
-  onToggleEvidence,
-  onSend
+  runState,
+  onNewChat,
+  onPauseRun,
+  onResumeRun,
+  onSend,
+  onStopRun
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -54,8 +50,7 @@ export function Composer({
     []
   );
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  const sendCurrentMessage = useCallback(async () => {
     const message = value.trim();
     if (!message || busy) {
       return;
@@ -64,53 +59,65 @@ export function Composer({
     setValue("");
     scheduleTextareaFocus();
     await onSend(message);
+  }, [busy, onSend, scheduleTextareaFocus, value]);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await sendCurrentMessage();
   }
 
   return (
-    <form className="composer" onSubmit={handleSubmit}>
-      <div className="composer-tool-stack">
-        {showEvidence ? (
+    <form className={busy ? "composer is-busy" : "composer"} onSubmit={handleSubmit}>
+      <div className="composer-input-shell">
+        <textarea
+          ref={textareaRef}
+          value={value}
+          placeholder="Message the assistant"
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+        />
+        <div className="composer-inline-actions">
           <button
-            className={evidenceOpen ? "evidence-toggle-button active" : "evidence-toggle-button"}
+            className="composer-new-chat-button"
             type="button"
-            onClick={onToggleEvidence}
-            title="Evidence"
-            aria-label={`Evidence${evidenceCount ? ` (${evidenceCount})` : ""}`}
-            aria-expanded={evidenceOpen}
-            aria-controls="evidence-drawer"
+            disabled={busy}
+            onClick={onNewChat}
+            title="New chat"
+            aria-label="New chat"
           >
-            <Database size={17} />
-            {evidenceCount ? <span className="activity-toggle-count">{Math.min(evidenceCount, 99)}</span> : null}
+            <Plus size={17} />
           </button>
-        ) : null}
-        <button
-          className={activityOpen ? "activity-toggle-button active" : "activity-toggle-button"}
-          type="button"
-          onClick={onToggleActivity}
-          title="Activity"
-          aria-label={`Activity${activityCount ? ` (${activityCount})` : ""}`}
-          aria-expanded={activityOpen}
-          aria-controls="activity-drawer"
-        >
-          <Activity size={17} />
-          {activityCount ? <span className="activity-toggle-count">{Math.min(activityCount, 99)}</span> : null}
-        </button>
+          {busy ? (
+            <div className="run-control-stack">
+              <button
+                className="run-control-button"
+                type="button"
+                disabled={runState === "stopping"}
+                onClick={runState === "paused" ? onResumeRun : onPauseRun}
+                title={runState === "paused" ? "Resume" : "Pause"}
+                aria-label={runState === "paused" ? "Resume run" : "Pause run"}
+              >
+                {runState === "paused" ? <Play size={16} /> : <Pause size={16} />}
+              </button>
+              <button
+                className="run-stop-button"
+                type="button"
+                disabled={runState === "stopping"}
+                onClick={onStopRun}
+                title="Stop"
+                aria-label="Stop run"
+              >
+                <Square size={15} />
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
-      <textarea
-        ref={textareaRef}
-        value={value}
-        placeholder="Message the assistant"
-        onChange={(event) => setValue(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey) {
-            event.preventDefault();
-            event.currentTarget.form?.requestSubmit();
-          }
-        }}
-      />
-      <button className="send-button" type="submit" disabled={busy || !value.trim()} title="Send" aria-label="Send">
-        <Send size={17} />
-      </button>
     </form>
   );
 }

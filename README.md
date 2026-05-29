@@ -1,105 +1,174 @@
-# Chrome Browser LLM Deterministic
+# Browser Chat Assistant
 
 Current as of May 11, 2026.
 
-A Chrome Manifest V3 side-panel assistant that connects Claude Haiku 4.5 to browser automation tools and a deterministic research preflight pipeline. The extension is designed for grounded browser answers: it can read tabs, search the web, inspect pages, manage tabs, collect evidence, and synthesize answers from extracted sources instead of relying only on the model's internal knowledge.
+Browser Chat Assistant is a Chrome Manifest V3 side-panel assistant that connects Anthropic Claude to browser automation, deterministic web research, and an optional local workspace folder. The app is designed for grounded answers: it can inspect tabs and pages, run search-oriented research before synthesis, collect evidence, and answer selected local file questions from a folder the user explicitly connects.
+
+## Audit Snapshot
+
+This README was updated after auditing the repository on May 11, 2026.
+
+- `npm run verify` passes: TypeScript type-checking, 11 Vitest files, 93 tests, and a production Vite build.
+- `npm run test:extension` passes locally: the side-panel Playwright smoke test passes and the live research trace test is skipped unless `LIVE_RESEARCH_PIPELINE=1` is set.
+- `npm audit --audit-level=moderate` reports 0 vulnerabilities.
+- Chrome Web Store readiness notes live in `docs/chrome-extension-readiness.md`; listing copy starts in `docs/chrome-web-store-listing.md`; the privacy-policy draft lives in `PRIVACY.md`.
+- The repository currently has no license file.
 
 ## What It Does
 
-- Runs as a Chrome side-panel chat assistant.
-- Uses Anthropic's Messages API directly from the extension runtime.
-- Stores provider settings locally in Chrome storage.
-- Sends Claude Haiku 4.5 a browser tool list for tab/page/history actions.
-- Runs a deterministic research pipeline for search-oriented prompts before the model answers.
-- Falls back to deterministic research when the model returns a knowledge-gap answer such as "I don't have specific information..." or "not in my knowledge base."
-- Shows live research progress in the UI while searches and source extraction are running.
-- Keeps an evidence packet for each run, including tool steps, candidate links, opened sources, warnings, and missing information.
+- Runs a Chrome side-panel chat UI titled `Browser Chat`.
+- Calls Anthropic's Messages API directly from the extension runtime.
+- Keeps chat history, settings, run activity, and latest evidence in local browser storage.
+- Lets Claude Haiku 4.5 use browser tools for tab listing/opening/navigation/grouping, search, page extraction, and page interaction.
+- Runs deterministic research before model synthesis for prompts that need current, external, cited, social, technical, or comparison evidence.
+- Runs deterministic workspace operations for local folder prompts when a workspace is connected.
+- Shows live progress, warnings, evidence cards, source coverage, activity, and run controls while long browser or workspace work is active.
+- Supports pausing, resuming, and stopping active runs through a Chrome runtime port.
 
-## Current Model And Provider
+## Model And Provider
 
-The app is currently hardwired to Anthropic:
+The chat loop is currently locked to Anthropic:
 
 - Provider: `anthropic`
-- Model: `claude-haiku-4-5-20251001`
+- Chat model: `claude-haiku-4-5-20251001`
 - Default base URL: `https://api.anthropic.com`
 - Default max output tokens: `1600`
 - Temperature: `0.2`
 
-The model and provider selectors are intentionally locked in the UI right now. The API base URL, API key, max output tokens, debug logs, and evidence preview toggles are configurable in the settings panel.
+The settings panel allows editing the API key, max output tokens, debug logs, evidence preview, workspace connection, workspace write access, and the research synthesis model.
 
-## Browser Capabilities
+Research synthesis can use:
 
-The model can request these tools during a normal tool loop:
+- `auto`, which keeps Haiku for simpler bundles and escalates to Sonnet for comparison, dense, incomplete, structured, or technical evidence.
+- `claude-haiku-4-5-20251001`, forced.
+- `claude-sonnet-4-6`, forced.
 
-- `browser_read_active_tab`: read active tab metadata, optional page snapshot, headings, text, and links.
-- `browser_list_tabs`: list open tabs.
-- `browser_open_tab`: open an HTTP or HTTPS URL.
-- `browser_navigate_active_tab`: navigate, reload, go back, or go forward.
-- `web_search`: open a Chrome default search results tab and optionally snapshot it.
-- `browser_extract_page`: extract readable page text, headings, and links.
-- `browser_find_in_page`: find matching passages in a page snapshot.
-- `browser_history_search`: search recent browser history.
-- `browser_group_tabs`: group selected tabs.
-- `browser_close_tabs`: close selected tabs.
+Workspace synthesis uses Haiku by default. If Sonnet is selected for synthesis, multi-operation workspace bundles can use Sonnet as well.
 
-Search-style prompts usually bypass the open-ended tool loop and use deterministic research first, which is more predictable than asking the model to decide whether to search.
+## Browser And Workspace Tools
 
-## Deterministic Research Pipeline
+Claude receives these browser tools during the normal tool loop:
 
-For prompts that look like they need current or external information, the background worker runs a preflight research pass before asking Haiku to write the answer.
+- `browser_read_active_tab`
+- `browser_list_tabs`
+- `browser_open_tab`
+- `browser_group_tabs`
+- `browser_navigate_active_tab`
+- `browser_observe_page`
+- `browser_click`
+- `browser_type`
+- `browser_select`
+- `browser_press_key`
+- `browser_scroll_page`
+- `browser_wait_for`
+- `browser_assert_page`
+- `web_search`
+- `browser_extract_page`
+- `browser_find_in_page`
 
-The trigger covers:
+When a local folder is connected, Claude can also use workspace tools:
 
-- Explicit search language: "search", "look up", "latest", "current", "docs", "pricing", "cite", "compare", and similar terms.
-- URLs and named sites.
-- Social discussion prompts about what users, developers, Reddit, forums, or communities are saying.
-- Researchable unfamiliar topic prompts, including short bare topics such as `ADK browser deterministic automation`.
-- Knowledge-gap fallback answers from the model.
+- `fs_get_workspace`
+- `fs_list_directory`
+- `fs_read_file`
+- `fs_search_files`
+- `fs_write_file`
+
+Workspace paths are relative to the selected folder. Workspace connections request browser read/write permission by default, and file writes are limited to the selected folder.
+
+Page interaction tools follow an observe-then-act pattern. `browser_observe_page` returns deterministic element refs, selectors, roles, labels, visibility, editability, and bounds; action tools then click, type, select, press keys, scroll, wait for conditions, or assert page state against those observed refs or explicit selectors.
+
+## Deterministic Browser Processes
+
+The browser interaction foundation mirrors the deterministic search pipeline: plan first, execute typed tool calls, record trace rows, check completion conditions, then hand only grounded results to synthesis.
+
+The process runner supports preconditions, postconditions, bounded retries, current-tab propagation, audit entries, and aggregate execution output. The optimized starting recipes are:
+
+- `observe-act-verify`: observe the page, perform one action, wait for a postcondition, then assert final state.
+- `form-fill-submit`: observe once, batch field edits without repeated observations, submit, then wait/assert success.
+- `navigation-guard`: open or navigate, wait for readiness, observe, and validate URL/title/page state.
+- `stateful-extract`: change page state, wait for deterministic readiness, extract the resulting content, and verify sufficiency.
+
+## Deterministic Research
+
+Search-style prompts usually run through a deterministic pipeline before the model answers. This is more predictable than asking the model to decide whether to search.
+
+The research trigger covers:
+
+- Explicit search language such as "search", "look up", "latest", "current", "docs", "pricing", "cite", and "compare".
+- URLs, named domains, and unfamiliar researchable topics.
+- Social discussion prompts involving users, developers, Reddit, forums, or communities.
+- Technical and comparison prompts that need authoritative sources.
+- Knowledge-gap fallback answers from the first model turn.
 
 The pipeline:
 
-1. Compiles the user prompt into a search query.
-2. Builds a search intent from prompt terms, named domains, freshness needs, architecture intent, social-discussion intent, and video intent.
-3. Opens Google search result pages through a visible browser tab.
-4. Ranks and deduplicates candidate links.
-5. Rotates one visible tab through ranked sources for extractable content.
+1. Compiles the prompt into one or more search plans.
+2. Builds intent from query terms, domains, freshness, architecture, social discussion, video, and comparison signals.
+3. Opens Google search results in a visible browser tab.
+4. Seeds, ranks, deduplicates, and batches candidate links.
+5. Rotates a visible tab through selected sources.
 6. Uses background fetch as a fallback when visible extraction is thin or blocked.
-7. Builds evidence cards with source URLs, selected facts, relevant passages, warnings, and extracted dates when available.
-8. Evaluates source sufficiency based on usable sources, domain diversity, relevant passages, freshness, and coverage score.
-9. Sends only the evidence bundle to Haiku for final synthesis.
+7. Extracts metadata, headings, tables, code blocks, page text, facts, and relevant passages.
+8. Builds evidence cards and evaluates source sufficiency.
+9. Sends only the deterministic source bundle to the selected synthesis model.
 
-The research UI receives progress events over a Chrome runtime port and displays current status, completed steps, warnings, source URLs, and synthesis state.
+The live progress card reports query planning, candidate discovery, page extraction, source quality, coverage, warnings, and synthesis status.
+
+## Deterministic Workspace
+
+Workspace prompts are handled before the open-ended model tool loop when they clearly refer to files, folders, paths, the repository, or the local project.
+
+The workspace planner can:
+
+- Check the connected folder and permission state.
+- List directories, optionally recursively.
+- Read text files with size limits.
+- Search file names and readable text content.
+- Create or overwrite text files when write access is enabled.
+
+Simple list/read/search/write requests can return directly from deterministic results. Broader workspace questions are synthesized from a clipped workspace bundle without giving the model direct filesystem access during synthesis.
 
 ## Project Structure
 
 ```text
 .
 ├── public/
+│   ├── icons/                       # Generated extension and action icons
 │   └── manifest.json
+├── docs/                            # Chrome extension readiness notes
+├── scripts/                         # Icon generation and release packaging helpers
 ├── src/
-│   ├── app/                         # React side-panel app shell and styles
-│   ├── background/                  # MV3 service worker, tool loop, research runner
-│   ├── conversation/                # Chat message types
-│   ├── evidence/                    # Evidence packet types
-│   ├── execution/                   # Tool/activity result types
+│   ├── app/                         # React side-panel shell and global styles
+│   ├── background/                  # MV3 service worker, run control, model/tool orchestration
+│   │   └── research/                # Search planning, ranking, evidence, sufficiency, traces
+│   ├── conversation/                # Chat message types and persisted chat history
+│   ├── evidence/                    # Evidence packet types and builders
+│   ├── execution/                   # Tool and activity result types
+│   ├── filesystem/                  # File System Access API workspace store
 │   ├── model/                       # Anthropic Messages API client
-│   ├── settings/                    # Provider/model/settings storage
-│   ├── shared/                      # Runtime request/response/progress protocol
-│   ├── tools/                       # Browser tool schemas and executors
+│   ├── settings/                    # Provider, model, and app settings
+│   ├── shared/                      # Runtime protocol and common helpers
+│   ├── tools/                       # Browser/workspace tool schemas and executors
 │   └── ui/components/               # Chat, drawers, composer, progress, settings
+├── tests/extension/                 # Playwright extension smoke and live trace specs
+├── PRIVACY.md
 ├── package.json
+├── playwright.config.ts
 ├── tsconfig.json
-└── vite.config.ts
+├── vite.config.ts
+└── vitest.config.ts
 ```
 
 ## Requirements
 
-- Node.js 20 or newer is recommended.
+- Node.js 20 or newer.
 - npm.
 - Chrome 116 or newer.
 - An Anthropic API key.
+- Playwright Chromium and `xvfb-run` for extension tests in a headless Linux environment.
 
-The extension uses Chrome APIs that are only available inside an installed extension context, including `tabs`, `tabGroups`, `scripting`, `storage`, `sidePanel`, `history`, and `search`.
+The extension uses Chrome APIs that only work inside an installed extension context, including `tabs`, `tabGroups`, `scripting`, `storage`, `sidePanel`, and `search`. Workspace folder access depends on the File System Access API.
 
 ## Setup
 
@@ -109,16 +178,43 @@ Install dependencies:
 npm install
 ```
 
-Type-check the project:
+Run local verification:
 
 ```bash
-npm run typecheck
+npm run verify
 ```
 
 Build the extension:
 
 ```bash
 npm run build
+```
+
+If you are enabling Clerk for the extension, copy `.env.example` to `.env` and set:
+
+- `VITE_CLERK_PUBLISHABLE_KEY`
+- `CLERK_FRONTEND_API`
+- `CRX_PUBLIC_KEY`
+
+`CRX_PUBLIC_KEY` keeps the extension ID stable across rebuilds, which Clerk's Chrome extension flow depends on. `CLERK_FRONTEND_API` is injected into the built manifest so Clerk requests are explicitly allowed by Chrome.
+
+If you are enabling the local backend for authenticated account and billing flows, copy `backend.env.example` to `backend.env` and set:
+
+- `CLERK_SECRET_KEY`
+- `CLERK_PUBLISHABLE_KEY`
+- `CLERK_JWT_KEY` when you want offline JWT verification
+- `STRIPE_SECRET_KEY`
+- `STRIPE_PRICE_PRO_MONTHLY`
+- `STRIPE_CHECKOUT_SUCCESS_URL`
+- `STRIPE_CHECKOUT_CANCEL_URL`
+- `STRIPE_PORTAL_RETURN_URL`
+
+Keep `STRIPE_SECRET_KEY` in the backend env only. Do not add Stripe secret keys to `.env`, Vite env vars, or extension source files.
+
+Package a Chrome Web Store upload zip:
+
+```bash
+npm run package:extension
 ```
 
 Load it in Chrome:
@@ -128,48 +224,62 @@ Load it in Chrome:
 3. Click "Load unpacked."
 4. Select the generated `dist/` directory.
 5. Click the extension action to open the side panel.
-6. Open settings and paste your Anthropic API key.
+6. Open Settings and paste your Anthropic API key.
 
-## Development Workflow
+## Development
 
-Use the Vite dev command for local frontend iteration:
+Use Vite for quick React side-panel iteration:
 
 ```bash
 npm run dev
 ```
 
-For real Chrome extension testing, rebuild and reload the unpacked extension:
+The Vite dev page does not provide the real Chrome extension runtime. For browser APIs, background service worker behavior, and side-panel testing, rebuild and reload the unpacked `dist/` extension from `chrome://extensions`.
 
-```bash
-npm run build
-```
-
-Then press the reload button for the extension on `chrome://extensions`.
-
-Useful scripts:
+## Scripts
 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start Vite on `127.0.0.1`. |
-| `npm run build` | Build the side panel and background service worker into `dist/`. |
 | `npm run typecheck` | Run TypeScript with `tsc --noEmit`. |
+| `npm run test` | Run Vitest unit/audit tests under `src/**/*.test.ts`. |
+| `npm run generate:icons` | Regenerate checked-in extension PNG icons. |
+| `npm run build` | Type-check and build the extension into `dist/`. |
+| `npm run build:debug` | Build with sourcemaps by setting `VITE_SOURCEMAP=1`. |
+| `npm run verify` | Run type-checking, Vitest, and a production Vite build. |
+| `npm run package:extension` | Generate icons, build, validate `dist/`, and write a Web Store zip under `release/`. |
 | `npm run preview` | Preview the built Vite app on `127.0.0.1`. |
+| `npm run test:pipeline` | Print the deterministic research audit trace fixture with verbose Vitest output. |
+| `npm run test:extension` | Build and run Playwright extension tests under Xvfb. |
+| `npm run test:pipeline:live` | Run the live browser/search research trace test. This visits the web and does not call the LLM. |
 
-## Configuration
+If Playwright cannot find a browser, run:
 
-Settings are saved locally under the key `ohmygod.settings`.
+```bash
+npx playwright install chromium
+```
 
-The default settings are:
+You can override the browser binary with:
+
+```bash
+PLAYWRIGHT_CHROME_EXECUTABLE=/path/to/chrome npm run test:extension
+```
+
+## Configuration Storage
+
+Settings are saved under `ohmygod.settings`.
+
+Default settings:
 
 ```ts
 {
   provider: {
     provider: "anthropic",
-    apiKey: "",
-    baseUrl: "https://api.anthropic.com"
+    apiKey: ""
   },
   model: {
     model: "claude-haiku-4-5-20251001",
+    researchSynthesisModel: "auto",
     temperature: 0.2,
     maxOutputTokens: 1600
   },
@@ -181,74 +291,46 @@ The default settings are:
 }
 ```
 
-Do not commit API keys or local environment files. API keys entered in the settings UI are saved in Chrome local storage, not in this repository.
+Chat history is saved under `ohmygod.chatHistory.v2` with migration support for `ohmygod.chatHistory.v1`. Workspace folder handles are saved in IndexedDB under `ohmygod.workspace`.
 
 ## Security And Privacy Notes
 
-- `.gitignore` excludes `node_modules/`, `dist/`, `.env*`, private keys, certificates, `.crx` packages, logs, local editor settings, browser profiles, and test output.
-- The extension currently requests broad host permissions for `http://*/*` and `https://*/*` because page extraction and browser automation can operate across arbitrary pages.
-- The extension sends chat context, selected tool results, and deterministic evidence bundles to the configured Anthropic API endpoint.
-- Browser history is only queried when the model explicitly uses `browser_history_search`.
-- The deterministic research pipeline may open visible browser tabs and visit search results while collecting evidence.
-- The Anthropic API key is transmitted as an `x-api-key` header to the configured base URL.
+- Do not commit API keys or local environment files.
+- API keys entered in Settings are stored in Chrome local storage and sent as an `x-api-key` header to `https://api.anthropic.com/v1/messages`.
+- The Anthropic client sends `anthropic-dangerous-direct-browser-access: true` because calls are made directly from the extension runtime.
+- The Chrome Web Store v1 build requests `https://*/*` host permission so it can inspect HTTPS pages and run user-requested browser research.
+- Deterministic research opens visible tabs, queries Google through Chrome, may visit search results, and may background-fetch HTTPS pages when visible extraction is thin.
+- Chat context, selected browser tool results, deterministic evidence bundles, and synthesized workspace snippets can be sent to Anthropic.
+- The Chrome Web Store v1 build does not request browser history permission.
+- Workspace access is opt-in through the browser folder picker and limited to the selected folder. Write operations also require the Settings write toggle.
+- Release builds omit sourcemaps by default. Use `npm run build:debug` when you intentionally need build sourcemaps.
+- The publishable privacy policy draft is in `PRIVACY.md`; Chrome Web Store readiness tracking is in `docs/chrome-extension-readiness.md`; listing copy starts in `docs/chrome-web-store-listing.md`.
+- `dist/`, `release/`, browser profiles, test output, logs, `.env*`, credentials, private keys, certificates, `.crx` packages, zip packages, and `node_modules/` are ignored by git.
 
 Review permissions and provider settings before distributing the extension beyond local development.
-
-## GitHub Readiness
-
-This repository is configured for:
-
-```bash
-git remote add origin https://github.com/chillysbabybackribs/chromeext-browser-llm-deterministic.git
-```
-
-Before pushing, run:
-
-```bash
-npm run typecheck
-npm run build
-git status --short --ignored
-```
-
-Expected ignored directories include:
-
-```text
-!! dist/
-!! node_modules/
-```
-
-To publish the current branch after reviewing changes:
-
-```bash
-git push -u origin main
-```
-
-## Known Implementation Notes
-
-- The project is private in `package.json`; that only affects npm publishing, not GitHub pushes.
-- `dist/` is generated build output and should not be committed.
-- `package-lock.json` should be committed for reproducible npm installs.
-- The app title in the UI is currently "Browser Chat" with the subtitle "V2 scaffold."
-- The current implementation assumes Anthropic direct browser access headers are acceptable for this local extension workflow.
 
 ## Troubleshooting
 
 ### "Add an Anthropic API key in settings before using Haiku 4.5."
 
-Open the side-panel settings and paste a valid Anthropic API key.
+Open Settings in the side panel and paste a valid Anthropic API key.
 
 ### "Chrome extension runtime is not available."
 
-The app is being opened outside the Chrome extension runtime. Build the extension and load `dist/` through `chrome://extensions`.
+The app is being opened outside the extension runtime. Build the extension and load `dist/` through `chrome://extensions`.
+
+### "This Chrome context does not support folder access."
+
+Workspace folder access depends on the File System Access API. Use a supported Chrome extension context and connect the folder from Settings.
 
 ### Search or extraction produces thin evidence
 
-Some pages block automated extraction, require sign-in, show CAPTCHA, or require JavaScript. The research runner marks those pages as blocked or thin and continues through additional candidates until it reaches sufficiency limits.
+Some pages block automated extraction, require sign-in, show CAPTCHA, or require JavaScript. The research runner records blocked or thin sources and continues through additional candidates until it reaches sufficiency or exhausts the search plan.
 
-### The model says it does not know an unfamiliar topic
+### The live research trace test is skipped
 
-The current code retries those knowledge-gap answers through deterministic research. If this still happens, inspect the Activity and Evidence drawers to see whether the search pipeline failed, produced thin sources, or exhausted candidate pages.
+`tests/extension/research-trace.live.spec.ts` only runs when `LIVE_RESEARCH_PIPELINE=1` is set. Use `npm run test:pipeline:live` when you intentionally want a live browser/search trace.
 
 ## License
 
-No license file is currently included. Add one before publishing if you want to define how others may use or redistribute the code.
+No license file is currently included. Add one before publishing if you want to define how others may use or redistribute this code.

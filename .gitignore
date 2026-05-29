@@ -4,12 +4,15 @@ node_modules/
 
 # Build output
 dist/
+release/
+*.zip
 *.tsbuildinfo
 
 # Local environment and secrets
 .env
 .env.*
 !.env.example
+!backend.env.example
 *.pem
 *.key
 *.p12
@@ -41,3 +44,6 @@ Thumbs.db
 # Browser/dev profiles
 chrome-profile/
 .local-chromium/
+
+# Backend local state
+server/data/

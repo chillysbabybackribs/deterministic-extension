@@ -4,13 +4,21 @@ export type VisibleBrowserActionKind =
   | "navigate"
   | "reload"
   | "history"
+  | "observe"
+  | "click"
+  | "type"
+  | "select"
+  | "press_key"
+  | "wait"
+  | "assert"
   | "snapshot"
   | "source_lookup"
   | "web_search"
   | "extract"
   | "group_tabs"
   | "prune_tabs"
-  | "scroll_scan";
+  | "scroll_scan"
+  | "filesystem";
 
 export type BrowserExecutionEventType =
   | "tab_read"
@@ -37,12 +45,19 @@ export type VisibleBrowserAction = {
   visible: boolean;
   startedAt: string;
   endedAt?: string;
+  durationMs?: number;
   resultSummary?: string;
   warning?: string;
   metadata?: Record<string, unknown>;
 };
 
 export type ExecutionLogLevel = "info" | "warning" | "error" | "debug";
+
+export type ExecutionTokenUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+};
 
 export type ExecutionLogEntry = {
   id: string;
@@ -56,6 +71,10 @@ export type ExecutionLogEntry = {
   eventType?: BrowserExecutionEventType;
   resultSummary?: string;
   warning?: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  usage?: ExecutionTokenUsage;
 };
 
 export type ToolExecutionStatus = "success" | "partial" | "failed" | "skipped";
@@ -70,6 +89,7 @@ export type ToolExecutionResult<TOutput = unknown> = {
   visibleActions: VisibleBrowserAction[];
   startedAt: string;
   endedAt: string;
+  durationMs?: number;
 };
 
 export type UniversalStepStatus =
@@ -86,6 +106,7 @@ export type UniversalStepResult<TOutput = unknown> = {
   status: UniversalStepStatus;
   startedAt: string;
   completedAt: string;
+  durationMs?: number;
   input: Record<string, unknown>;
   output?: TOutput;
   warnings: string[];

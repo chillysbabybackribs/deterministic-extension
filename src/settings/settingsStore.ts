@@ -1,11 +1,15 @@
 import {
   DEFAULT_PROVIDER_SETTINGS,
+  type ProviderId,
   type ProviderSettings
 } from "./providerSettings";
 import {
   CLAUDE_HAIKU_4_5_MODEL,
+  CLAUDE_SONNET_4_6_MODEL,
   DEFAULT_MODEL_SETTINGS,
-  type ModelSettings
+  type ChatModelId,
+  type ModelSettings,
+  type ResearchSynthesisModelSetting
 } from "./modelSettings";
 
 export const DEV_PERMISSIVE_EXECUTION = true;
@@ -27,8 +31,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   model: DEFAULT_MODEL_SETTINGS,
   dev: {
     permissiveExecution: DEV_PERMISSIVE_EXECUTION,
-    showDebugLogs: true,
-    showEvidencePreview: true
+    showDebugLogs: false,
+    showEvidencePreview: false
   }
 };
 
@@ -63,24 +67,39 @@ function mergeSettings(saved?: Partial<AppSettings>): AppSettings {
     provider: {
       ...DEFAULT_APP_SETTINGS.provider,
       ...saved?.provider,
-      provider: "anthropic"
+      provider: normalizeProvider(saved?.provider?.provider)
     },
     model: {
       ...DEFAULT_APP_SETTINGS.model,
       ...saved?.model,
       model: normalizeModel(saved?.model?.model),
+      researchSynthesisModel: normalizeResearchSynthesisModel(saved?.model?.researchSynthesisModel),
       maxOutputTokens: normalizeMaxOutputTokens(saved?.model?.maxOutputTokens)
     },
     dev: {
       ...DEFAULT_APP_SETTINGS.dev,
       ...saved?.dev,
-      permissiveExecution: DEV_PERMISSIVE_EXECUTION
+      permissiveExecution: typeof saved?.dev?.permissiveExecution === "boolean"
+        ? saved.dev.permissiveExecution
+        : DEV_PERMISSIVE_EXECUTION
     }
   };
 }
 
-function normalizeModel(model: unknown): typeof CLAUDE_HAIKU_4_5_MODEL {
-  return model === CLAUDE_HAIKU_4_5_MODEL ? model : CLAUDE_HAIKU_4_5_MODEL;
+function normalizeProvider(provider: unknown): ProviderId {
+  return provider === "anthropic" ? provider : DEFAULT_APP_SETTINGS.provider.provider;
+}
+
+function normalizeModel(model: unknown): ChatModelId {
+  return model === CLAUDE_HAIKU_4_5_MODEL || model === CLAUDE_SONNET_4_6_MODEL
+    ? model
+    : CLAUDE_HAIKU_4_5_MODEL;
+}
+
+function normalizeResearchSynthesisModel(model: unknown): ResearchSynthesisModelSetting {
+  return model === "auto" || model === CLAUDE_HAIKU_4_5_MODEL || model === CLAUDE_SONNET_4_6_MODEL
+    ? model
+    : DEFAULT_APP_SETTINGS.model.researchSynthesisModel;
 }
 
 function normalizeMaxOutputTokens(value: unknown): number {

@@ -1,4 +1,11 @@
 import type { UniversalStepResult, VisibleBrowserAction } from "../execution/executionTypes";
+import type {
+  PageCodeBlock,
+  PageForm,
+  PageMetadata,
+  PagePriceCandidate,
+  PageTable
+} from "../tools/pageSnapshot";
 
 export type EvidenceQuality = "strong" | "partial" | "thin" | "failed" | "uncertain";
 export type EvidenceClass =
@@ -53,8 +60,13 @@ export type PageEvidence = EvidenceBase & {
   type: "page";
   url?: string;
   title?: string;
+  metadata?: PageMetadata;
   headings?: string[];
   textSample?: string;
+  tables?: PageTable[];
+  codeBlocks?: PageCodeBlock[];
+  forms?: PageForm[];
+  priceCandidates?: PagePriceCandidate[];
 };
 
 export type ValueEvidence = EvidenceBase & {

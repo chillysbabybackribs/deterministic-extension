@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Browser Chat Assistant premium icon</title>
+  <desc id="desc">A graphite rounded badge with a centered blue-white assistant orb.</desc>
+  <defs>
+    <linearGradient id="badge" x1="20" y1="18" x2="108" y2="112" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#30343A" />
+      <stop offset="0.42" stop-color="#18191D" />
+      <stop offset="1" stop-color="#0E1013" />
+    </linearGradient>
+    <linearGradient id="badge-sheen" x1="28" y1="18" x2="96" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.18" />
+      <stop offset="0.36" stop-color="#FFFFFF" stop-opacity="0.05" />
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0" />
+    </linearGradient>
+    <radialGradient id="orb" cx="37%" cy="30%" r="68%">
+      <stop offset="0" stop-color="#B9FFF3" />
+      <stop offset="0.43" stop-color="#74E9D9" />
+      <stop offset="1" stop-color="#4FA4FF" />
+    </radialGradient>
+    <radialGradient id="orb-shine" cx="38%" cy="30%" r="62%">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.78" />
+      <stop offset="0.38" stop-color="#FFFFFF" stop-opacity="0.22" />
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0" />
+    </radialGradient>
+    <filter id="soft-shadow" x="-18%" y="-18%" width="136%" height="136%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000000" flood-opacity="0.48" />
+    </filter>
+    <filter id="orb-shadow" x="-35%" y="-35%" width="170%" height="170%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#000000" flood-opacity="0.42" />
+      <feDropShadow dx="0" dy="0" stdDeviation="7" flood-color="#6EECD5" flood-opacity="0.22" />
+    </filter>
+  </defs>
+
+  <path d="M21 11H107C112.5 11 117 15.5 117 21V107C117 112.5 112.5 117 107 117H21C15.5 117 11 112.5 11 107V21C11 15.5 15.5 11 21 11Z" fill="#FFFFFF" opacity="0.22" />
+  <rect x="13" y="13" width="102" height="102" rx="24" fill="url(#badge)" filter="url(#soft-shadow)" />
+  <rect x="16" y="16" width="96" height="96" rx="21" fill="url(#badge-sheen)" />
+  <rect x="16" y="16" width="96" height="96" rx="21" fill="none" stroke="#FFFFFF" stroke-opacity="0.11" stroke-width="1.5" />
+
+  <circle cx="64" cy="64" r="40" fill="url(#orb)" filter="url(#orb-shadow)" />
+  <circle cx="64" cy="64" r="40" fill="none" stroke="#FFFFFF" stroke-opacity="0.28" stroke-width="2.5" />
+  <circle cx="64" cy="64" r="34" fill="url(#orb-shine)" />
+  <circle cx="64" cy="64" r="15.5" fill="#F7FBFF" fill-opacity="0.72" />
+</svg>

@@ -6,22 +6,51 @@
   "description": "Chrome sidepanel assistant with direct Claude Haiku 4.5 browser tools.",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "backend:build": "tsc -p server/tsconfig.json",
+    "backend:dev": "tsx watch server/src/index.ts",
+    "backend:start": "tsx server/src/index.ts",
+    "backend:typecheck": "tsc --noEmit -p server/tsconfig.json",
+    "build": "npm run typecheck && vite build",
+    "build:fast": "vite build",
+    "build:debug": "VITE_SOURCEMAP=1 npm run build",
+    "generate:icons": "node scripts/generate-icons.mjs",
+    "package:extension": "npm run generate:icons && npm run build && node scripts/package-extension.mjs",
+    "test": "vitest run",
+    "test:extension": "VITE_BYPASS_CLERK_AUTH=1 npm run build && xvfb-run -a playwright test --config playwright.config.ts",
+    "typecheck": "npm run backend:typecheck && tsc --noEmit -p tsconfig.json",
+    "verify": "npm run generate:icons && npm run typecheck && npm run test && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "^4.2.1",
+    "@clerk/backend": "^3.4.7",
+    "@clerk/chrome-extension": "^3.1.24",
+    "better-sqlite3": "^12.9.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "lucide-react": "^0.468.0",
+    "pdfjs-dist": "^5.7.284",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "vite": "^5.0.10"
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "stripe": "^22.1.1",
+    "supertest": "^7.2.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@types/chrome": "^0.0.268",
+    "@playwright/test": "^1.59.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/chrome": "^0.1.42",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/node": "^20.10.5",
     "@types/react": "^18.2.45",
     "@types/react-dom": "^18.2.18",
-    "typescript": "^5.3.3"
+    "@types/supertest": "^7.2.0",
+    "@vitejs/plugin-react": "^6.0.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.3.3",
+    "vite": "^8.0.12",
+    "vitest": "^4.1.6"
   }
 }

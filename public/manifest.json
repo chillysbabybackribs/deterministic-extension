@@ -2,10 +2,28 @@
   "manifest_version": 3,
   "name": "Browser Chat Assistant",
   "version": "0.0.1",
-  "description": "A chat-first browser assistant with direct Claude Haiku 4.5 browser tools.",
+  "description": "A chat-first browser assistant for page help, web research, browser tasks, and selected workspace files.",
   "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png",
+    "128": "icons/icon-128.png",
+    "256": "icons/icon-256.png",
+    "512": "icons/icon-512.png"
+  },
   "action": {
-    "default_title": "Browser Chat Assistant"
+    "default_title": "Browser Chat Assistant",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "96": "icons/icon-96.png",
+      "128": "icons/icon-128.png",
+      "256": "icons/icon-256.png",
+      "512": "icons/icon-512.png"
+    }
   },
   "background": {
     "service_worker": "background/serviceWorker.js",
@@ -15,17 +33,31 @@
     "default_path": "src/app/index.html"
   },
   "permissions": [
+    "cookies",
     "tabs",
     "tabGroups",
     "scripting",
     "storage",
     "sidePanel",
-    "history",
-    "search"
+    "search",
+    "webRequest"
   ],
   "host_permissions": [
     "https://api.anthropic.com/*",
-    "http://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "http://[::1]/*",
     "https://*/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content/netShimMain.js",
+        "content/netShimBridge.js"
+      ],
+      "matches": [
+        "https://*/*"
+      ]
+    }
   ]
 }
