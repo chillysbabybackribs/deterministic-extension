@@ -6,8 +6,35 @@ import {
   describeSimilarityDistribution,
   embeddingRanker,
   rankUnitsBySimilarity,
+  relevantCount,
   toRankedUnits
 } from "./embeddingRanker";
+
+describe("relevantCount (self-calibrating gap cutoff)", () => {
+  it("cuts at the largest gap once past the minKeep floor", () => {
+    // minKeep=4; a decisive drop after index 5 → keep 6.
+    expect(relevantCount([0.9, 0.89, 0.88, 0.87, 0.86, 0.85, 0.5, 0.49])).toBe(6);
+  });
+
+  it("keeps the window when scores are too uniform to split (gap < minGap)", () => {
+    expect(relevantCount([0.8, 0.795, 0.79, 0.785, 0.78])).toBe(5);
+  });
+
+  it("minKeep floor: a single dominant top score cannot starve the result to 1", () => {
+    // Without the floor the first gap (0.95->0.6) would cut to 1; minKeep=4 keeps
+    // the cluster (the uniform tail past minKeep has no decisive gap → keep window).
+    expect(relevantCount([0.95, 0.6, 0.59, 0.58, 0.57])).toBe(5);
+  });
+
+  it("respects minKeep bounded by what's available", () => {
+    expect(relevantCount([0.95, 0.6])).toBe(2); // only 2 exist → keep 2
+  });
+
+  it("handles empty / single", () => {
+    expect(relevantCount([])).toBe(0);
+    expect(relevantCount([0.7])).toBe(1);
+  });
+});
 
 function unit(ordinal: number, text: string, embedding?: number[]): FileUnit {
   return {
@@ -54,7 +81,8 @@ describe("rankUnitsBySimilarity", () => {
       unit(2, "refreshes the login credential before expiry", [0.9, 0.2, 0.05]) // near
     ]);
 
-    const ranked = rankUnitsBySimilarity(c, queryVector);
+    // minKeep:1 isolates the meaning/gap behavior on this 3-unit fixture.
+    const ranked = rankUnitsBySimilarity(c, queryVector, { minKeep: 1 });
     const texts = ranked.map((r) => r.unit.text);
 
     expect(texts).toContain("validates the session token on each request");
@@ -64,33 +92,34 @@ describe("rankUnitsBySimilarity", () => {
     expect(ranked[0].unit.ordinal).toBe(0);
   });
 
-  it("returns NO fixed count — a broad query keeps every comparably-relevant unit", () => {
+  it("returns NO fixed count — a broad query with a uniform top keeps the whole cluster", () => {
     const queryVector = [1, 0];
-    // Ten units all very close to the query: a broad question keeps them all.
-    const units = Array.from({ length: 10 }, (_, i) => unit(i, `relevant ${i}`, [1, i * 0.001]));
+    // Ten units all near-identical to the query (no decisive gap): keep them all.
+    const units = Array.from({ length: 10 }, (_, i) => unit(i, `relevant ${i}`, [1, i * 0.0005]));
     const ranked = rankUnitsBySimilarity(corpus(units), queryVector);
     expect(ranked).toHaveLength(10);
   });
 
-  it("a focused query returns only the tight cluster, dropping the long tail via the relative margin", () => {
+  it("self-calibrates: cuts at the largest gap between the relevant cluster and the baseline", () => {
     const queryVector = [1, 0];
     const c = corpus([
-      unit(0, "bullseye", [1, 0]), // sim ~1.0
-      unit(1, "close", [0.99, 0.14]), // sim ~0.99, within margin
-      unit(2, "mediocre", [0.7, 0.71]) // sim ~0.70, outside the 0.18 margin from 1.0
+      unit(0, "bullseye", [1, 0]), // ~1.0   ┐ relevant cluster
+      unit(1, "close", [0.995, 0.1]), // ~0.995 ┘
+      unit(2, "baseline-a", [0.7, 0.71]), // ~0.70  ┐ baseline mass (big gap above)
+      unit(3, "baseline-b", [0.69, 0.72]) // ~0.69  ┘
     ]);
-    const ranked = rankUnitsBySimilarity(c, queryVector);
-    const texts = ranked.map((r) => r.unit.text);
-    expect(texts).toEqual(["bullseye", "close"]);
+    // minKeep:1 isolates the gap logic from the count floor for this small fixture.
+    const ranked = rankUnitsBySimilarity(c, queryVector, { minKeep: 1 });
+    expect(ranked.map((r) => r.unit.text)).toEqual(["bullseye", "close"]);
   });
 
-  it("drops the unrelated tail below the absolute similarity floor", () => {
+  it("drops the unrelated tail via the gap (a near-orthogonal unit is far below)", () => {
     const queryVector = [1, 0];
     const c = corpus([
-      unit(0, "near", [1, 0]),
-      unit(1, "unrelated", [0, 1]) // cosine 0, below minSimilarity
+      unit(0, "near", [1, 0]), // ~1.0
+      unit(1, "unrelated", [0, 1]) // ~0.0 — huge gap, dropped
     ]);
-    const ranked = rankUnitsBySimilarity(c, queryVector);
+    const ranked = rankUnitsBySimilarity(c, queryVector, { minKeep: 1 });
     expect(ranked.map((r) => r.unit.text)).toEqual(["near"]);
   });
 
@@ -112,19 +141,21 @@ describe("rankUnitsBySimilarity", () => {
 });
 
 describe("describeSimilarityDistribution", () => {
-  it("reports top/median/min and how many clear each threshold", () => {
+  it("reports top/median/min, the gap, and the gap-based kept count", () => {
     const queryVector = [1, 0];
+    // One clean split: a tight top cluster (~1.0, ~0.995) then a baseline plateau
+    // (~0.70, ~0.69) — the single biggest gap sits between them.
     const c = corpus([
-      unit(0, "a", [1, 0]), // sim 1.0
-      unit(1, "b", [0.99, 0.14]), // ~0.99
-      unit(2, "c", [0.7, 0.71]), // ~0.70 (below 0.18 margin from 1.0)
-      unit(3, "d", [0, 1]) // 0.0 (below floor)
+      unit(0, "a", [1, 0]), // ~1.0   ┐ cluster
+      unit(1, "b", [0.995, 0.1]), // ~0.995 ┘
+      unit(2, "c", [0.7, 0.714]), // ~0.70  ┐ baseline plateau
+      unit(3, "d", [0.69, 0.724]) // ~0.69  ┘
     ]);
-    const dist = describeSimilarityDistribution(c, queryVector);
+    const dist = describeSimilarityDistribution(c, queryVector, { minKeep: 1 });
     expect(dist?.comparable).toBe(4);
     expect(dist?.top).toBeCloseTo(1, 1);
-    expect(dist?.aboveFloor).toBe(3); // three clear 0.55
-    expect(dist?.kept).toBe(2); // only the tight cluster survives the margin
+    expect(dist?.gap).toBeGreaterThan(0.1); // decisive separation found
+    expect(dist?.kept).toBe(2); // cut at the largest gap → top cluster only
   });
 
   it("returns undefined when nothing is comparable", () => {
@@ -154,7 +185,7 @@ describe("embeddingRanker (seam)", () => {
 
   it("embeds once and ranks when vectors are present", async () => {
     const c = corpus([unit(0, "near", [1, 0]), unit(1, "far", [0, 1])]);
-    const out = await embeddingRanker.rank(c, async () => [1, 0]);
+    const out = await embeddingRanker.rank(c, async () => [1, 0], { minKeep: 1 });
     expect(out.map((r) => r.unit.text)).toEqual(["near"]);
   });
 });

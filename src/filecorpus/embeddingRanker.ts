@@ -28,34 +28,33 @@ import type { RankedUnit } from "./rankUnits";
 
 export type SemanticRankOptions = {
   /**
-   * Absolute cosine floor — a unit must be at least this similar to the query to
-   * be considered relevant at all. Filters out the long tail of unrelated units.
+   * SELF-CALIBRATING cutoff: we do NOT use a guessed absolute threshold. Instead
+   * we sort the query's scores and cut at the LARGEST GAP between consecutive
+   * scores in the candidate range — the natural separation between the relevant
+   * cluster (top) and the baseline mass (below). This adapts to each query and to
+   * wherever the embedding model's baseline happens to sit, so there is no magic
+   * number to tune. The options below only bound that search; they are not the
+   * cutoff itself.
    */
-  minSimilarity?: number;
+  /** Never consider more than this many top candidates for the gap search (perf + sanity). */
+  maxCandidates?: number;
+  /** Minimum drop (in cosine) that counts as a real "gap"; below this the scores are too uniform to split, so keep up to `maxHits`. */
+  minGap?: number;
   /**
-   * Relative margin below the top hit. A unit is kept only if its similarity is
-   * within `relativeMargin` of the best unit's similarity, so a single strong
-   * match doesn't drag in a pile of mediocre ones, while a broad query with many
-   * comparably-relevant units keeps them all.
+   * Always keep at least this many of the top results before the gap is allowed
+   * to cut. Stops a single dominant top unit from starving the result to 1 — its
+   * close-enough neighbours come along. A floor on COUNT, not a similarity threshold.
    */
-  relativeMargin?: number;
-  /**
-   * Hard safety ceiling on returned hits — NOT a relevance budget. It only
-   * guards against a pathological query that is "relevant" to nearly everything;
-   * in normal use the relevance cutoffs bite first. Generous on purpose.
-   */
+  minKeep?: number;
+  /** Hard safety ceiling on returned hits — a backstop, never the normal stop. */
   maxHits?: number;
 };
 
-/**
- * Defaults tuned for cosine similarity on normalised-ish embeddings. These are
- * the single, documented relevance knobs — not a budget. minSimilarity drops the
- * unrelated tail; relativeMargin keeps the cohesive cluster around the top hit.
- */
 const DEFAULT_OPTIONS: Required<SemanticRankOptions> = {
-  minSimilarity: 0.55,
-  relativeMargin: 0.18,
-  maxHits: 200
+  maxCandidates: 30,
+  minGap: 0.04,
+  minKeep: 4,
+  maxHits: 30
 };
 
 export type SemanticRankedUnit = RankedUnit & {
@@ -85,9 +84,6 @@ export function rankUnitsBySimilarity(
       continue; // no comparable vector — skip; lexical fallback covers it.
     }
     const similarity = cosineSimilarity(queryVector, unit.embedding);
-    if (similarity < opts.minSimilarity) {
-      continue;
-    }
     scored.push({ unit, score: similarity, similarity, matchedTerms: [], pulledAsNeighbor: false });
   }
 
@@ -97,15 +93,49 @@ export function rankUnitsBySimilarity(
 
   scored.sort((left, right) => right.similarity - left.similarity || left.unit.ordinal - right.unit.ordinal);
 
-  // Relevance cutoff: keep the cohesive cluster within `relativeMargin` of the
-  // top hit. This is what makes "no budget" deterministic — the boundary is set
-  // by the query's own relevance gradient, not a count.
-  const topSimilarity = scored[0].similarity;
-  const floor = topSimilarity - opts.relativeMargin;
-  const relevant = scored.filter((hit) => hit.similarity >= floor);
+  const keep = relevantCount(scored.map((s) => s.similarity), opts);
+  return scored.slice(0, keep);
+}
 
-  // The ceiling is a safety net, never the normal stopping condition.
-  return relevant.slice(0, opts.maxHits);
+/**
+ * Self-calibrating cutoff: given scores sorted descending, return how many to
+ * keep by finding the LARGEST GAP between consecutive scores within the top
+ * `maxCandidates`. The relevant cluster sits above that gap; the baseline mass
+ * below it. No absolute threshold — the boundary comes from the query's own
+ * distribution, so it adapts to focused vs. broad queries and to wherever the
+ * model's baseline sits. If no gap exceeds `minGap` (scores too uniform to
+ * split), keep the whole candidate window. Always keeps at least the top hit.
+ */
+export function relevantCount(sortedDesc: number[], options: SemanticRankOptions = {}): number {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  if (!sortedDesc.length) {
+    return 0;
+  }
+  const window = Math.min(sortedDesc.length, opts.maxCandidates, opts.maxHits);
+  if (window <= 1) {
+    return window;
+  }
+  // Always keep at least minKeep (bounded by what's available), so one dominant
+  // top score can't cut the result down to a single unit.
+  const minKeep = Math.min(opts.minKeep, window);
+
+  let bestGap = 0;
+  let cutAfter = window; // default: keep the whole window (no decisive gap)
+  // Search for the cut only at or beyond minKeep — the floor cluster is always kept.
+  for (let i = Math.max(0, minKeep - 1); i < window - 1; i += 1) {
+    const gap = sortedDesc[i] - sortedDesc[i + 1];
+    if (gap > bestGap) {
+      bestGap = gap;
+      cutAfter = i + 1; // keep indices [0..i]
+    }
+  }
+
+  // Only trust the gap if it's a real separation; otherwise the distribution is
+  // too uniform to split meaningfully — keep the candidate window.
+  if (bestGap < opts.minGap) {
+    return window;
+  }
+  return Math.max(cutAfter, minKeep);
 }
 
 /** True when at least one unit carries a vector — i.e. semantic ranking is possible. */
@@ -119,9 +149,9 @@ export type SimilarityDistribution = {
   top: number;
   median: number;
   min: number;
-  /** How many clear the absolute floor (minSimilarity). */
-  aboveFloor: number;
-  /** How many survive the relative-margin cutoff (the actual returned count). */
+  /** The largest gap found (the self-calibrating cut point's size). */
+  gap: number;
+  /** How many the gap-based cutoff keeps (the actual returned count). */
   kept: number;
 };
 
@@ -150,16 +180,20 @@ export function describeSimilarityDistribution(
     return undefined;
   }
   sims.sort((a, b) => b - a);
-  const top = sims[0];
-  const aboveFloor = sims.filter((s) => s >= opts.minSimilarity).length;
-  const kept = sims.filter((s) => s >= opts.minSimilarity && s >= top - opts.relativeMargin).length;
+  const kept = relevantCount(sims, opts);
+  // The size of the gap we cut at, for the calibration readout.
+  const window = Math.min(sims.length, opts.maxCandidates, opts.maxHits);
+  let gap = 0;
+  for (let i = 0; i < window - 1; i += 1) {
+    gap = Math.max(gap, sims[i] - sims[i + 1]);
+  }
   return {
     comparable: sims.length,
-    top: round(top),
+    top: round(sims[0]),
     median: round(sims[Math.floor(sims.length / 2)]),
     min: round(sims[sims.length - 1]),
-    aboveFloor,
-    kept: Math.min(kept, opts.maxHits)
+    gap: round(gap),
+    kept
   };
 }
 

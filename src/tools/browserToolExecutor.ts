@@ -1561,7 +1561,7 @@ async function queryCorpus(input: Record<string, unknown>): Promise<ToolRuntimeR
   // thresholds can be tuned from data (see embeddingRanker DEFAULT_OPTIONS).
   const d = result.distribution;
   const calibrationNote = d
-    ? ` [sim top ${d.top}, median ${d.median}, min ${d.min}; ${d.aboveFloor}/${d.comparable} above floor, ${d.kept} kept]`
+    ? ` [sim top ${d.top}, median ${d.median}, min ${d.min}; gap ${d.gap}, ${d.kept}/${d.comparable} kept]`
     : "";
 
   return {

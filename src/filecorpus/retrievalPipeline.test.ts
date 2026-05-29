@@ -24,9 +24,14 @@ function corpus(units: FileUnit[]): FileCorpus {
 
 describe("runRetrieval", () => {
   it("uses the SEMANTIC path when the corpus has vectors and the query embeds", async () => {
+    // An auth-related cluster (all near the query) plus one far-off marketing unit.
     const c = corpus([
       unit(0, "validates the session token on each request", [1, 0, 0]),
-      unit(1, "renders the marketing homepage", [0, 0, 1])
+      unit(1, "refreshes the login credential before expiry", [0.99, 0.05, 0]),
+      unit(2, "checks the auth header on the request", [0.98, 0.06, 0]),
+      unit(3, "rotates the api key in the keychain", [0.97, 0.07, 0]),
+      unit(4, "signs the bearer token", [0.96, 0.08, 0]),
+      unit(5, "renders the marketing homepage", [0, 0, 1]) // far → dropped at the gap
     ]);
     const result = await runRetrieval(c, "how is auth handled", async () => [1, 0, 0]);
     expect(result.mode).toBe("semantic");
@@ -58,21 +63,29 @@ describe("runRetrieval", () => {
     expect(result.mode).toBe("lexical");
   });
 
-  it("falls back to lexical when semantic finds nothing above the relevance floor", async () => {
-    // Query vector orthogonal to every unit → zero semantic hits → lexical picks
-    // up the exact keyword match instead.
-    const c = corpus([unit(0, "exactTokenXYZ appears here", [1, 0]), unit(1, "other", [1, 0])]);
-    const result = await runRetrieval(c, "exactTokenXYZ", async () => [0, 1]);
-    expect(result.mode).toBe("lexical");
-    expect(result.rendered).toContain("exactTokenXYZ");
+  it("self-calibrates the count via the gap — cuts the cluster from the baseline", async () => {
+    // A 5-unit relevant cluster, then a decisive drop to a baseline pair. The cut
+    // (past the minKeep floor) keeps the cluster, drops the baseline.
+    const c = corpus([
+      unit(0, "a", [1, 0]),
+      unit(1, "b", [0.99, 0.05]),
+      unit(2, "c", [0.98, 0.06]),
+      unit(3, "d", [0.97, 0.07]),
+      unit(4, "e", [0.96, 0.08]),
+      unit(5, "baseline-a", [0.6, 0.8]),
+      unit(6, "baseline-b", [0.59, 0.81])
+    ]);
+    const result = await runRetrieval(c, "q", async () => [1, 0]);
+    expect(result.mode).toBe("semantic");
+    expect(result.matchCount).toBe(5); // cluster kept, baseline dropped at the gap
   });
 
-  it("returns NO fixed count semantically — many relevant units all come back", async () => {
-    const units = Array.from({ length: 12 }, (_, i) => unit(i, `relevant passage number ${i}`, [1, i * 0.001]));
+  it("returns NO fixed count — a uniform top cluster all comes back (not capped at 8)", async () => {
+    const units = Array.from({ length: 12 }, (_, i) => unit(i, `relevant passage number ${i}`, [1, i * 0.0003]));
     const c = corpus(units);
     const result = await runRetrieval(c, "q", async () => [1, 0]);
     expect(result.mode).toBe("semantic");
-    expect(result.matchCount).toBe(12); // not capped at 8
+    expect(result.matchCount).toBe(12);
   });
 });
 
