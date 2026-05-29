@@ -50,6 +50,8 @@ export async function routePrompt(args: {
   userMessage: string;
   settings: AppSettings;
   history?: ChatContextMessage[];
+  /** Model for the classify call; the policy picks the fast tier. */
+  model?: string;
   signal?: AbortSignal;
 }): Promise<RouteDecision> {
   try {
@@ -65,8 +67,7 @@ export async function routePrompt(args: {
 
     const response = await callAnthropicMessage({
       settings: args.settings,
-      // Router is cheap by intent; if the chat model is already the fast one this
-      // is a no-op, but we never upgrade it to a heavier model for routing.
+      model: args.model,
       system: ROUTER_SYSTEM_PROMPT,
       messages: [{ role: "user", content: userContent }],
       signal: args.signal

@@ -17,12 +17,15 @@
  */
 
 import { buildComponentIndex } from "./rankComponents";
-import type { PageEntry, WebCorpus, WebCorpusDescriptor, WebCorpusPageSummary } from "./webCorpusTypes";
+import { buildSectionIndex } from "./rankSections";
+import type { ContentSection, PageEntry, WebCorpus, WebCorpusDescriptor, WebCorpusPageSummary } from "./webCorpusTypes";
 
 const DB_NAME = "ohmygod.webcorpus";
 const DB_VERSION = 1;
 const SITE_STORE = "sites";
-const SCHEMA_VERSION = 1;
+// v2 adds the research-content layer: PageEntry.contentSections + the site-wide
+// contentIndex/sectionCount. Migrate-on-read backfills these on v1 records.
+const SCHEMA_VERSION = 2;
 
 /** Cap pages per site so an accidental crawl can't balloon a record unbounded. */
 const MAX_PAGES_PER_SITE = 200;
@@ -52,8 +55,26 @@ async function openDb(): Promise<IDBDatabase> {
 }
 
 function migrate(record: StoredCorpus): StoredCorpus {
-  // No migrations yet; stamp the current schema version for forward records.
-  return record.schemaVersion === SCHEMA_VERSION ? record : { ...record, schemaVersion: SCHEMA_VERSION };
+  if (record.schemaVersion === SCHEMA_VERSION) {
+    return record;
+  }
+  // v1 → v2: backfill the research-content layer. Old records have no content
+  // sections, so every page gets an empty contentSections, the site-wide
+  // contentIndex is empty, and sectionCount is 0. The interaction layer is
+  // untouched. Pure on-read backfill — nothing is recomputed until the next write.
+  const pages = Object.fromEntries(
+    Object.entries(record.pages ?? {}).map(([pageId, page]) => [
+      pageId,
+      { ...page, contentSections: page.contentSections ?? [] }
+    ])
+  );
+  return {
+    ...record,
+    pages,
+    sectionCount: record.sectionCount ?? 0,
+    contentIndex: record.contentIndex ?? { n: 0, df: {}, tf: {} },
+    schemaVersion: SCHEMA_VERSION
+  };
 }
 
 export async function getWebCorpus(siteId: string): Promise<WebCorpus | undefined> {
@@ -88,7 +109,9 @@ function emptyCorpus(siteId: string, siteName: string, now: string): WebCorpus {
     pages: {},
     pageCount: 0,
     componentCount: 0,
+    sectionCount: 0,
     index: { n: 0, df: {}, tf: {} },
+    contentIndex: { n: 0, df: {}, tf: {} },
     warnings: []
   };
 }
@@ -111,7 +134,11 @@ export async function writePage(args: {
 
   const prior = existing.pages[args.page.pageId];
   const visitCount = (prior?.visitCount ?? 0) + 1;
-  const page: PageEntry = { ...args.page, visitCount, capturedAt: args.now };
+  // An overlay-only capture carries no content sections; preserve any sections a
+  // prior research pass already wrote for this page so a later interaction-only
+  // re-capture doesn't wipe the research layer (newest capture wins per layer).
+  const contentSections: ContentSection[] = args.page.contentSections ?? prior?.contentSections ?? [];
+  const page: PageEntry = { ...args.page, contentSections, visitCount, capturedAt: args.now };
 
   const pages = { ...existing.pages, [args.page.pageId]: page };
 
@@ -129,6 +156,7 @@ export async function writePage(args: {
 
   const pageList = Object.values(prunedPages);
   const allComponents = pageList.flatMap((p) => p.components);
+  const allSections = pageList.flatMap((p) => p.contentSections ?? []);
   const next: WebCorpus = {
     ...existing,
     siteName: args.siteName || existing.siteName,
@@ -136,10 +164,13 @@ export async function writePage(args: {
     pages: prunedPages,
     pageCount: pageList.length,
     componentCount: allComponents.length,
+    sectionCount: allSections.length,
     // Full rebuild over all pages' components. Component ids are stable per page,
     // so a rebuild is simplest and keeps the site-wide index exactly consistent
     // with what rankComponents scores. Cheap at these sizes (deduped components).
     index: buildComponentIndex(allComponents),
+    // Same rebuild approach for the research-content index, over section text.
+    contentIndex: buildSectionIndex(allSections),
     warnings
   };
 
@@ -182,6 +213,7 @@ function pageSummaries(corpus: WebCorpus): WebCorpusPageSummary[] {
       lastUrl: p.lastUrl,
       title: p.title,
       componentCount: p.components.length,
+      sectionCount: (p.contentSections ?? []).length,
       visitCount: p.visitCount,
       capturedAt: p.capturedAt
     }))
@@ -194,6 +226,7 @@ export function descriptorFromCorpus(corpus: WebCorpus): WebCorpusDescriptor {
     siteName: corpus.siteName,
     pageCount: corpus.pageCount,
     componentCount: corpus.componentCount,
+    sectionCount: corpus.sectionCount ?? 0,
     updatedAt: corpus.updatedAt
   };
 }

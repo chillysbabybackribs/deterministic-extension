@@ -23,6 +23,7 @@ function page(pageId: string, components: ComponentEntry[]): PageEntry {
     capturedAt: "2026-05-29T00:00:00.000Z",
     visitCount: 1,
     components,
+    contentSections: [],
     rawElementCount: components.length,
     dedupedCount: 0,
     warnings: []
@@ -39,7 +40,9 @@ function corpus(pages: PageEntry[], siteId = "https://shop.test"): WebCorpus {
     pages: Object.fromEntries(pages.map((p) => [p.pageId, p])),
     pageCount: pages.length,
     componentCount: all.length,
+    sectionCount: 0,
     index: buildComponentIndex(all),
+    contentIndex: { n: 0, df: {}, tf: {} },
     warnings: []
   };
 }

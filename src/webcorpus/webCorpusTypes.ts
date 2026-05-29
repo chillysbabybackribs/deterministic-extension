@@ -151,6 +151,52 @@ export type ComponentEntry = {
   searchText: string;
 };
 
+// --- Content section (the research-content layer) -----------------------------
+
+/**
+ * One labelled, high-value chunk of a page's READABLE content — the research
+ * layer, distinct from the interaction (ComponentEntry) layer. The deterministic
+ * research loop extracts a page, strips boilerplate, and segments the main text
+ * into titled sections; each becomes a ContentSection carrying VERBATIM summary
+ * text (not a model paraphrase) plus enough provenance to cite it. The model
+ * never reads the raw page — it synthesizes from these sections, returned by a
+ * deterministic corpus search.
+ *
+ * Dedup is by `contentKey` (normalized title + a hash/normalization of the text):
+ * the same section captured from two URLs, or re-captured on a revisit, collapses
+ * to one entry. `sourceUrls` keeps the URLs it was seen at (bounded) so a merged
+ * section can cite every source it was corroborated by.
+ */
+export type ContentSection = {
+  /** Stable within a page: `${pageId}#s${ordinal}`. */
+  id: string;
+  /** Order the section appeared in the page's main content. */
+  ordinal: number;
+
+  /**
+   * Dedup identity: normalized(title) + normalized/hashed(text). Two sections
+   * with the same contentKey are the SAME section (same source re-read, or the
+   * same passage corroborated across pages). Rule lives with the extractor slice.
+   */
+  contentKey: string;
+
+  /** Section heading/label (e.g. an <h2>), or a derived label when untitled. */
+  title: string;
+  /** VERBATIM high-value text of the section (cleaned/stripped, not paraphrased). */
+  text: string;
+
+  /** The page URL(s) this section was extracted from (bounded; for citation). */
+  sourceUrls: string[];
+  /** ISO timestamp of the capture that produced/refreshed this section. */
+  capturedAt: string;
+
+  /**
+   * Text indexed for retrieval (title + text). Precomputed so ranking is
+   * O(query terms), and kept separate from `text` so we control the index input.
+   */
+  searchText: string;
+};
+
 // --- Page entry ---------------------------------------------------------------
 
 /** Map of one visited page: its behavior-deduped components + freshness. */
@@ -167,6 +213,14 @@ export type PageEntry = {
   visitCount: number;
 
   components: ComponentEntry[];
+
+  /**
+   * The research-content layer: labelled high-value sections of the page's
+   * readable text. EMPTY for pages mapped only by overlay capture (the
+   * interaction layer); populated by the deterministic research loop. Kept
+   * ALONGSIDE `components` — the two layers coexist on the same page entry.
+   */
+  contentSections: ContentSection[];
 
   /** Raw actionable count before behavioral dedup (provenance for tuning). */
   rawElementCount: number;
@@ -194,6 +248,8 @@ export type WebCorpus = {
   pageCount: number;
   /** Convenience: total behavior-deduped components across all pages. */
   componentCount: number;
+  /** Convenience: total content sections across all pages (research layer). */
+  sectionCount: number;
 
   /**
    * Precomputed retrieval index over component `searchText`, reusing the
@@ -201,6 +257,14 @@ export type WebCorpus = {
    * embedding ranker) drops in unchanged. Rebuilt incrementally as pages fold in.
    */
   index: CorpusIndex;
+
+  /**
+   * Precomputed retrieval index over content-section `searchText` — kept SEPARATE
+   * from `index` because section prose and interaction labels are different
+   * vocabularies, so sharing one idf would distort both. This is the index the
+   * deterministic corpus search (research synthesis path) ranks against.
+   */
+  contentIndex: CorpusIndex;
 
   /** Non-fatal accumulation notes (e.g. page cap reached). */
   warnings: string[];
@@ -220,6 +284,8 @@ export type WebCorpusPageSummary = {
   lastUrl: string;
   title: string;
   componentCount: number;
+  /** Content sections mapped for this page (research layer). */
+  sectionCount: number;
   visitCount: number;
   /** ISO timestamp of the most recent capture of this page. */
   capturedAt: string;
@@ -229,6 +295,8 @@ export type WebCorpusDescriptor = {
   siteName: string;
   pageCount: number;
   componentCount: number;
+  /** Total content sections across the site (research layer). */
+  sectionCount: number;
   /** ISO timestamp of the last update — drives an "Updated Nm ago" tooltip. */
   updatedAt: string;
   /** Per-page detail, newest capture first. Present in the UI readout. */
@@ -237,7 +305,8 @@ export type WebCorpusDescriptor = {
 
 /** Natural-language phrase describing what's mapped for a site, for prompts. */
 export function describeWebCorpus(d: WebCorpusDescriptor): string {
+  const sections = d.sectionCount ? `, ${d.sectionCount} content section${d.sectionCount === 1 ? "" : "s"}` : "";
   return `a map of "${d.siteName}" (${d.pageCount} page${
     d.pageCount === 1 ? "" : "s"
-  }, ${d.componentCount} components)`;
+  }, ${d.componentCount} components${sections})`;
 }

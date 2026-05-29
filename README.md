@@ -1,14 +1,14 @@
 # Browser Chat Assistant
 
-Current as of May 11, 2026.
+Current as of May 29, 2026.
 
 Browser Chat Assistant is a Chrome Manifest V3 side-panel assistant that connects Anthropic Claude to browser automation, deterministic web research, and an optional local workspace folder. The app is designed for grounded answers: it can inspect tabs and pages, run search-oriented research before synthesis, collect evidence, and answer selected local file questions from a folder the user explicitly connects.
 
 ## Audit Snapshot
 
-This README was updated after auditing the repository on May 11, 2026.
+This README was updated after auditing the repository on May 29, 2026.
 
-- `npm run verify` passes: TypeScript type-checking, 11 Vitest files, 93 tests, and a production Vite build.
+- `npm run verify` passes: TypeScript type-checking, 63 Vitest files, 449 tests, and a production Vite build.
 - `npm run test:extension` passes locally: the side-panel Playwright smoke test passes and the live research trace test is skipped unless `LIVE_RESEARCH_PIPELINE=1` is set.
 - `npm audit --audit-level=moderate` reports 0 vulnerabilities.
 - Chrome Web Store readiness notes live in `docs/chrome-extension-readiness.md`; listing copy starts in `docs/chrome-web-store-listing.md`; the privacy-policy draft lives in `PRIVACY.md`.
@@ -20,7 +20,7 @@ This README was updated after auditing the repository on May 11, 2026.
 - Calls Anthropic's Messages API directly from the extension runtime.
 - Keeps chat history, settings, run activity, and latest evidence in local browser storage.
 - Lets Claude Haiku 4.5 use browser tools for tab listing/opening/navigation/grouping, search, page extraction, and page interaction.
-- Runs deterministic research before model synthesis for prompts that need current, external, cited, social, technical, or comparison evidence.
+- Runs a deterministic, corpus-backed research loop before model synthesis for prompts that need current, external, cited, technical, or comparison information — the model plans the searches and synthesizes the answer, but never reads pages itself.
 - Runs deterministic workspace operations for local folder prompts when a workspace is connected.
 - Shows live progress, warnings, evidence cards, source coverage, activity, and run controls while long browser or workspace work is active.
 - Supports pausing, resuming, and stopping active runs through a Chrome runtime port.
@@ -39,7 +39,7 @@ The settings panel allows editing the API key, max output tokens, debug logs, ev
 
 Research synthesis can use:
 
-- `auto`, which keeps Haiku for simpler bundles and escalates to Sonnet for comparison, dense, incomplete, structured, or technical evidence.
+- `auto`, which keeps Haiku for simpler prompts and escalates to Sonnet for complex ones — comparison, enumeration (`X, Y, and Z` / `X vs Y vs Z`), reasoning, dense, or technical tasks — via the `modelPolicy` complexity classifier.
 - `claude-haiku-4-5-20251001`, forced.
 - `claude-sonnet-4-6`, forced.
 
@@ -91,29 +91,34 @@ The process runner supports preconditions, postconditions, bounded retries, curr
 
 ## Deterministic Research
 
-Search-style prompts usually run through a deterministic pipeline before the model answers. This is more predictable than asking the model to decide whether to search.
+Search-style prompts run through a deterministic, corpus-backed research loop before the model answers. The model is used in exactly two places — planning the searches and synthesizing the final answer — never per page. This keeps token usage low and makes the path predictable instead of asking the model to decide whether and how to search.
 
-The research trigger covers:
+### Page scan gate
 
-- Explicit search language such as "search", "look up", "latest", "current", "docs", "pricing", "cite", and "compare".
-- URLs, named domains, and unfamiliar researchable topics.
-- Social discussion prompts involving users, developers, Reddit, forums, or communities.
-- Technical and comparison prompts that need authoritative sources.
-- Knowledge-gap fallback answers from the first model turn.
+Before any work, a cheap prompt-only gate (`pageScanGate`) decides whether the current page is even relevant:
 
-The pipeline:
+- A web-research / search prompt (e.g. "research…", "search the web", "compare X vs Y", "latest…") **skips the page scan entirely** and goes straight to the search step. The page the user happens to be sitting on is irrelevant to the research.
+- A prompt that targets the current page (deictic "this page", or an interaction verb like click/type/scroll/fill/submit, or an explicit captured-UI selection) **scans** — it runs the actionable overlay and feeds that page map into planning.
+- Anything else (a self-contained ask) skips the scan.
 
-1. Compiles the prompt into one or more search plans.
-2. Builds intent from query terms, domains, freshness, architecture, social discussion, video, and comparison signals.
-3. Opens Google search results in a visible browser tab.
-4. Seeds, ranks, deduplicates, and batches candidate links.
-5. Rotates a visible tab through selected sources.
-6. Uses background fetch as a fallback when visible extraction is thin or blocked.
-7. Extracts metadata, headings, tables, code blocks, page text, facts, and relevant passages.
-8. Builds evidence cards and evaluates source sufficiency.
-9. Sends only the deterministic source bundle to the selected synthesis model.
+The decision is made from the prompt alone. It deliberately does not weigh the current URL against the corpus, because the navigation listener folds every visited page into the corpus — so "is this site known" is true for almost every page and could never say skip.
 
-The live progress card reports query planning, candidate discovery, page extraction, source quality, coverage, warnings, and synthesis status.
+### The research loop
+
+When a research prompt diverts to the research path:
+
+1. The planner compiles the prompt into one or more `search_web` steps — one per distinct angle or sub-question. It does **not** plan `understand_page` steps to read result links; the loop does that.
+2. Each search runs in the background and reuses the **single working tab** — the tab the user already had open — rather than spawning new tabs.
+3. Organic result links are extracted from the SERP only (anchors wrapping an `<h3>`), so the search page sees links and nothing else.
+4. The loop opens candidate URLs one at a time in that same working tab, pre-warming the next page's navigation while it extracts the current one.
+5. Each page is extracted, stripped of boilerplate (cookie/legal/sign-in/link-dumps), split into high-value content sections, and deduplicated across pages by a normalized content key.
+6. Cleaned sections are written to the persistent **web corpus** (IndexedDB), which now carries two layers per page entry: the interaction-element map and the research content sections.
+7. The model then runs a deterministic corpus retrieval (`rankSectionsAcrossSites`, TF-IDF over the content layer) and receives a single structured summary of verbatim, sourced section text.
+8. Synthesis runs once over that structured summary.
+
+If the structured summary is insufficient the pipeline can degrade gracefully to a generic loop, but a healthy pipeline should answer from the first pass — a required second pass means the search pipeline is broken.
+
+The live progress card reports the scan decision, search planning, pages read, sections recalled, warnings, and synthesis status.
 
 ## Deterministic Workspace
 
@@ -141,7 +146,8 @@ Simple list/read/search/write requests can return directly from deterministic re
 ├── src/
 │   ├── app/                         # React side-panel shell and global styles
 │   ├── background/                  # MV3 service worker, run control, model/tool orchestration
-│   │   └── research/                # Search planning, ranking, evidence, sufficiency, traces
+│   │   └── pipeline/                # Plan→execute→gate→synthesize, page-scan gate, corpus research loop
+│   ├── webcorpus/                   # Persistent web corpus: content sections, retrieval, ranking
 │   ├── conversation/                # Chat message types and persisted chat history
 │   ├── evidence/                    # Evidence packet types and builders
 │   ├── execution/                   # Tool and activity result types

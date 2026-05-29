@@ -1140,14 +1140,21 @@ async function webSearch(input: Record<string, unknown>): Promise<ToolRuntimeRes
   const includeSnapshot = asBoolean(input.includeSnapshot, true);
   const background = asBoolean(input.background, false);
   const maxChars = clampNumber(input.maxChars, 6000, 500, Number.MAX_SAFE_INTEGER);
+  const reuseTabId = input.tabId === undefined ? undefined : requiredNumber(input.tabId, "tabId");
   const tabsBefore = await chrome.tabs.query({ currentWindow: true });
   const tabIdsBefore = new Set(tabsBefore.map((tab) => tab.id).filter((tabId): tabId is number => tabId !== undefined));
 
-  // Background search: open Google in an inactive tab so the user never sees the
-  // results page itself — only the result pages they later choose to open are
-  // visible. Foreground path keeps the user's default engine via search.query.
+  // Tab selection, in priority order:
+  //  - reuseTabId given → navigate THAT tab to the SERP (no new tab). This is how
+  //    the research path keeps the whole pipeline in the user's current tab.
+  //  - background → open Google in an inactive tab (legacy background search).
+  //  - else → foreground via the user's default engine in a new tab.
   let tab: chrome.tabs.Tab;
-  if (background) {
+  if (reuseTabId !== undefined) {
+    await chrome.tabs.update(reuseTabId, { url: makeGoogleWebSearchUrl(query) });
+    await waitForTabComplete(reuseTabId, 12_000).catch(() => undefined);
+    tab = await chrome.tabs.get(reuseTabId);
+  } else if (background) {
     const created = await chrome.tabs.create({ url: makeGoogleWebSearchUrl(query), active: false });
     tab = created.id !== undefined ? await chrome.tabs.get(created.id).catch(() => created) : created;
   } else {

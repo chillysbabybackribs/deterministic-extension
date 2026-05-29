@@ -13,12 +13,23 @@ vi.mock("../../tools/fat", () => ({ clearTask: vi.fn(() => Promise.resolve()) })
 vi.mock("../../tools/elementOverlay", () => ({ hideAllActionableOverlays: vi.fn(() => Promise.resolve()) }));
 // Fast-path defaults to "skip" so non-interaction tests behave as before; tests
 // that exercise the inversion override it per-case.
-vi.mock("./interactionFastPath", () => ({ runInteractionFastPath: vi.fn(async () => ({ kind: "skip" })) }));
+// Stub runInteractionFastPath but keep the module's real exports (the scan gate
+// imports detectFastPathIntent from here, so a full replacement would break it).
+vi.mock("./interactionFastPath", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./interactionFastPath")>()),
+  runInteractionFastPath: vi.fn(async () => ({ kind: "skip" }))
+}));
 vi.mock("./pagePlanningContext", () => ({ buildPagePlanningContext: vi.fn(async () => undefined) }));
 // Router defaults to "tools" so existing PLAN→GATE→SYNTHESIZE mock chains are
 // unaffected (the router would otherwise consume the first model call). The
 // router's own logic is unit-tested in router.test.ts.
 vi.mock("./router", () => ({ routePrompt: vi.fn(async () => "tools") }));
+// Research path is wired so a search-first plan diverts to the deterministic
+// loop. Mock it here: the generic PLAN→EXECUTE→GATE tests default to an EMPTY
+// research result (the divert falls through to the normal loop), and a dedicated
+// test overrides it to assert the divert fires.
+vi.mock("./researchPath", () => ({ runResearchPath: vi.fn() }));
+vi.mock("./researchLoopFetcher", () => ({ fetchResearchPage: vi.fn() }));
 
 import { callAnthropicMessage, streamAnthropicMessage } from "../../model/anthropicToolClient";
 import { executePlan } from "./executePlan";
@@ -26,6 +37,7 @@ import { hideAllActionableOverlays } from "../../tools/elementOverlay";
 import { runInteractionFastPath } from "./interactionFastPath";
 import { buildPagePlanningContext } from "./pagePlanningContext";
 import { routePrompt } from "./router";
+import { runResearchPath } from "./researchPath";
 import { runPipeline } from "./pipelineRunner";
 import { DEFAULT_APP_SETTINGS } from "../../settings/settingsStore";
 
@@ -35,7 +47,10 @@ const mockExec = vi.mocked(executePlan);
 const mockFastPath = vi.mocked(runInteractionFastPath);
 const mockPagePlanning = vi.mocked(buildPagePlanningContext);
 const mockRoute = vi.mocked(routePrompt);
+const mockResearch = vi.mocked(runResearchPath);
 const mockHide = vi.mocked(hideAllActionableOverlays);
+
+const emptyResearch = { structuredSummary: "", missing: "", visitedUrls: [], recalledCount: 0, warnings: [] };
 
 function msg(text: string) {
   return { id: "m", type: "message" as const, role: "assistant" as const, model: "x", content: [{ type: "text" as const, text }] };
@@ -57,6 +72,7 @@ beforeEach(() => {
   mockFastPath.mockResolvedValue({ kind: "skip" });
   mockPagePlanning.mockResolvedValue(undefined);
   mockRoute.mockResolvedValue("tools");
+  mockResearch.mockResolvedValue(emptyResearch);
   // Trailing default for callAnthropicMessage = a "none" follow-up, so the
   // post-answer follow-up call (after any non-blocked answer) resolves cleanly.
   // mockResolvedValueOnce chains for PLAN/GATE/SYNTHESIZE take precedence.
@@ -320,6 +336,28 @@ describe("runPipeline loop", () => {
     const r = await runPipeline({ userMessage: "research X", settings });
     expect(r.ok).toBe(true);
     expect(mockExec).toHaveBeenCalledTimes(2);
+  });
+
+  it("a search-first plan diverts to the research path: no execute, no gate", async () => {
+    mockModel
+      .mockResolvedValueOnce(msg(JSON.stringify({ steps: [{ tool: "search_web", args: { query: "best keyboards" } }] }))) // PLAN
+      .mockResolvedValueOnce(msg("Here are the top picks.")); // SYNTHESIZE
+    mockResearch.mockResolvedValueOnce({
+      structuredSummary: "### Top picks\nSource: https://x.test/a\n\nThe best keyboards are...",
+      missing: "",
+      visitedUrls: ["https://x.test/a"],
+      recalledCount: 2,
+      warnings: []
+    });
+
+    const r = await runPipeline({ userMessage: "search the web for the best keyboards", settings });
+    expect(r.ok).toBe(true);
+    expect(mockResearch).toHaveBeenCalledTimes(1);
+    // The deterministic loop replaces execute/gate entirely for a research turn.
+    expect(mockExec).not.toHaveBeenCalled();
+    // PLAN + SYNTHESIZE + FOLLOW-UP only — no GATE call.
+    expect(mockModel).toHaveBeenCalledTimes(3);
+    expect(r.answer).toContain("top picks");
   });
 
   it("grep recovery: gate grep -> inline grep execute -> synthesize", async () => {

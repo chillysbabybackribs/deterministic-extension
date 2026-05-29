@@ -33,15 +33,7 @@ export function collectPageSnapshot(options: { maxChars: number; includeLinks: b
   const text = normalizedText.slice(0, maxChars);
   const fullText = normalizedText.slice(0, fullTextMaxChars);
   const sections = includeStructured ? extractTextSections(fullText, headings) : undefined;
-  const links = options.includeLinks
-    ? Array.from(document.links)
-        .map((link) => ({
-          text: (link.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 160),
-          url: link.href
-        }))
-        .filter((link) => link.url && /^https?:\/\//i.test(link.url))
-        .slice(0, 120)
-    : [];
+  const links = options.includeLinks ? collectLinks() : [];
 
   const tables = includeStructured ? collectTables() : undefined;
   const codeBlocks = includeStructured ? collectCodeBlocks() : undefined;
@@ -77,6 +69,54 @@ export function collectPageSnapshot(options: { maxChars: number; includeLinks: b
       targetedSections: Boolean(targetedSections?.some((section) => section.truncated))
     }
   };
+
+  function collectLinks(): Array<{ text: string; url: string }> {
+    const toLink = (anchor: HTMLAnchorElement | HTMLAreaElement) => ({
+      text: (anchor.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 160),
+      url: anchor.href
+    });
+    const isHttp = (link: { url: string }) => link.url && /^https?:\/\//i.test(link.url);
+
+    // On a Google search-results page, the raw document.links list is dominated
+    // by Google's own chrome (logo, apps menu, Tools, sign-in, footer, the right
+    // rail, "People also ask", related-search chips). In DOM order those crowd
+    // out the actual organic results, and the old 120-cap could starve them out
+    // entirely — which is why candidate extraction came back thin/wrong and the
+    // pipeline opened bad links and 404-wandered. On a SERP we therefore collect
+    // ONLY the organic result links and nothing else.
+    const host = (location.hostname ?? "").toLowerCase();
+    const isGoogleSerp =
+      (host === "www.google.com" || host === "google.com") && location.pathname === "/search";
+    if (isGoogleSerp) {
+      const seen = new Set<string>();
+      const results: Array<{ text: string; url: string }> = [];
+      // An organic result's title link is an <a> that contains the result's <h3>
+      // title — a structure-stable signal across Google redesigns that nav/footer/
+      // sidebar links never have. Anchor text comes from the <h3> when present.
+      for (const h3 of Array.from(document.querySelectorAll("h3"))) {
+        const anchor = h3.closest("a") as HTMLAnchorElement | null;
+        if (!anchor) {
+          continue;
+        }
+        const text = (h3.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+        const link = { text: text || toLink(anchor).text, url: anchor.href };
+        if (!isHttp(link) || seen.has(link.url)) {
+          continue;
+        }
+        seen.add(link.url);
+        results.push(link);
+        if (results.length >= 16) {
+          break;
+        }
+      }
+      return results;
+    }
+
+    return Array.from(document.links)
+      .map(toLink)
+      .filter(isHttp)
+      .slice(0, 120);
+  }
 
   function collectMetadata(): PageMetadata {
     const keywords = readMeta("keywords")

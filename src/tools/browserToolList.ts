@@ -525,6 +525,10 @@ export const HAIKU_BROWSER_TOOLS: AnthropicToolSchema[] = [
           type: "boolean",
           description: "Run the search in an inactive tab so the results page is not shown to the user. Defaults to false."
         },
+        tabId: {
+          type: "number",
+          description: "Reuse this existing tab for the search (navigate it to the results page) instead of opening a new tab. Takes priority over background."
+        },
         maxChars: {
           type: "number"
         }

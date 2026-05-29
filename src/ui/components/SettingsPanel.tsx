@@ -337,11 +337,13 @@ function MappedSitesReadout() {
             <div key={site.siteName}>
               <div style={{ fontWeight: 600 }}>
                 {site.siteName} — {site.pageCount} page{site.pageCount === 1 ? "" : "s"}, {site.componentCount} components
+                {site.sectionCount ? `, ${site.sectionCount} sections` : ""}
               </div>
               <ul style={{ margin: "2px 0 0", paddingLeft: 16, listStyle: "none" }}>
                 {(site.pages ?? []).map((page) => (
                   <li key={page.pageId} title={page.lastUrl} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {page.lastUrl} — {page.componentCount} component{page.componentCount === 1 ? "" : "s"}
+                    {page.sectionCount ? ` · ${page.sectionCount} section${page.sectionCount === 1 ? "" : "s"}` : ""}
                     {page.visitCount > 1 ? ` · ${page.visitCount} visits` : ""}
                   </li>
                 ))}

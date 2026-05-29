@@ -38,12 +38,16 @@ import { describeActiveSource, type ActiveWorkingFileDescriptor } from "../../fi
 import { executePlan, type DeferredPlanSteps, type ExecutedStep, type ExecuteContext } from "./executePlan";
 import { hideAllActionableOverlays, type OverlayCaptureResult } from "../../tools/elementOverlay";
 import type { PrefetchedBeforeObservation } from "../../tools/fat";
-import { resetResearchTab } from "../../tools/researchTab";
+import { resetResearchTab, setResearchTabId } from "../../tools/researchTab";
 import { runInteractionFastPath } from "./interactionFastPath";
 import { getCachedSiteRecon } from "../reconCache";
 import { renderSiteRecon } from "../../tools/siteRecon";
 import { buildPagePlanningContext } from "./pagePlanningContext";
+import { shouldScanCurrentPage } from "./pageScanGate";
 import { routePrompt } from "./router";
+import { runResearchPath } from "./researchPath";
+import { fetchResearchPage } from "./researchLoopFetcher";
+import { classifyComplexity, selectModel, type ModelStep } from "../../model/modelPolicy";
 
 const MAX_ITERATIONS = 5;
 const MAX_DEFERRED_PLAN_RESUMES = 4;
@@ -84,6 +88,12 @@ export async function runPipeline(args: {
   resetResearchTab();
   const activity: ExecutionLogEntry[] = [];
   const model = args.settings.model.model;
+  // MODEL AWARENESS: label the turn's complexity once, then pick a model PER STEP
+  // (mechanical steps → fast tier; synthesis/chat → strong; a complex task bumps
+  // mechanical steps up). Additive — every call still happens; we only choose
+  // which model runs it. See model/modelPolicy.ts.
+  const complexity = classifyComplexity(args.userMessage);
+  const pick = (step: ModelStep): string => selectModel({ step, complexity, settings: args.settings.model }).model;
   const log = (entry: Omit<ExecutionLogEntry, "id" | "timestamp">) => {
     activity.push({ id: makeId("log"), timestamp: new Date().toISOString(), ...entry });
   };
@@ -138,15 +148,16 @@ export async function runPipeline(args: {
         userMessage: args.userMessage,
         settings: args.settings,
         history: args.history,
+        model: pick("router"),
         signal: args.control?.signal
       });
-      log({ level: "info", label: "Route", details: `Decision: ${route}`, toolName: "router", actionLabel: "Router", status: "completed" });
+      log({ level: "info", label: "Route", details: `Decision: ${route} · complexity: ${complexity}`, toolName: "router", actionLabel: "Router", status: "completed" });
       if (route === "chat") {
         const answer = await answerChat({
           userMessage: args.userMessage,
           settings: args.settings,
           history: args.history,
-          model,
+          model: pick("chat"),
           signal: args.control?.signal,
           onAnswerDelta: args.onAnswerDelta
         });
@@ -164,10 +175,22 @@ export async function runPipeline(args: {
     // so escalations can tell the model what OTHER pages exist, not just this one.
     let currentPageContext = await readCurrentPageContext();
     let siteReconText = readCachedSiteReconText(currentPageContext?.tabId);
-    const pagePlanningContext = await buildPagePlanningContext({
+    // URL-FIRST GATE: the overlay scan (showActionableOverlay) is the slow part of
+    // a turn. Decide cheaply — from the prompt + current URL/title + known corpus
+    // sites, no DOM — whether it's worth running. A web-research prompt on an
+    // unrelated page skips it entirely instead of mapping a useless page.
+    const scanDecision = shouldScanCurrentPage({
       userMessage: args.userMessage,
-      tabId: currentPageContext?.tabId
+      url: currentPageContext?.url,
+      // A captured UI context is an explicit "act on this page" signal — always scan.
+      hasActiveCaptureContext: !!args.activeCaptureContext
     });
+    const pagePlanningContext = scanDecision.scan
+      ? await buildPagePlanningContext({
+          userMessage: args.userMessage,
+          tabId: currentPageContext?.tabId
+        })
+      : undefined;
     if (pagePlanningContext) {
       overlayPainted = true;
       prefetchedActionableMap = pagePlanningContext.capture;
@@ -179,14 +202,30 @@ export async function runPipeline(args: {
         actionLabel: "Overlay corpus",
         status: "completed"
       });
+    } else {
+      log({
+        level: "info",
+        label: "Page map",
+        details: `Skipped the page scan — ${scanDecision.reason}.`,
+        toolName: "page_planning_context",
+        actionLabel: "Scan gate",
+        status: "completed"
+      });
     }
-    const fastPath = await runInteractionFastPath({
-      userMessage: args.userMessage,
-      tabId: currentPageContext?.tabId,
-      capture: pagePlanningContext?.capture,
-      siteReconText: pagePlanningContext ? undefined : siteReconText,
-      onProgress: (label, detail) => emit({ level: "info", label, detail, status: "running" })
-    });
+    // The interaction fast-path ALSO captures the overlay (the page DOM scan) when
+    // no pre-planning capture exists. If the URL-first gate decided this page is
+    // irrelevant, the fast-path must NOT independently re-run that scan — skip it.
+    // It only ever fires for page-interaction intents anyway, which the gate would
+    // have flagged as scan-worthy.
+    const fastPath = scanDecision.scan
+      ? await runInteractionFastPath({
+          userMessage: args.userMessage,
+          tabId: currentPageContext?.tabId,
+          capture: pagePlanningContext?.capture,
+          siteReconText: pagePlanningContext ? undefined : siteReconText,
+          onProgress: (label, detail) => emit({ level: "info", label, detail, status: "running" })
+        })
+      : ({ kind: "skip" } as const);
     if (fastPath.kind === "fired") {
       overlayPainted = true;
       log({ level: "info", label: "Interaction", details: `Deterministic match (no model): ${fastPath.answer}`, toolName: "interaction_fast_path", actionLabel: "Fast-path", status: "completed" });
@@ -240,7 +279,7 @@ export async function runPipeline(args: {
         currentPageContext,
         activeCaptureContext: args.activeCaptureContext,
         activeWorkingFile: args.activeWorkingFile,
-        model,
+        model: pick("planner"),
         signal: args.control?.signal
       });
       warnings.push(...planResult.warnings);
@@ -256,6 +295,64 @@ export async function runPipeline(args: {
       if (!planResult.plan.steps.length) {
         // Nothing to run — answer directly from what we have (or the model's knowledge).
         break;
+      }
+
+      // WEB-RESEARCH PATH: when the model's first plan is search-dominated and no
+      // page/file task is attached, divert to the deterministic research loop
+      // instead of the generic execute/gate loop. The model "built the search
+      // loop" (the search_web steps); the loop now opens results one at a time in
+      // the working tab, extracts/cleans/sections/dedupes into the corpus, and a
+      // deterministic corpus search returns the structured summary the synthesis
+      // step writes from. No mid-loop model gate — one pass, then synthesize.
+      const searchQueries = extractSearchQueries(planResult.plan);
+      const isResearchTurn =
+        proactiveRound === 0 &&
+        iteration === 1 &&
+        searchQueries.length > 0 &&
+        planResult.plan.steps[0]?.tool === "search_web" &&
+        !args.activeWorkingFile &&
+        !args.activeCaptureContext &&
+        !planResult.plan.steps.some((s) => s.tool === "act_on_page");
+      if (isResearchTurn) {
+        await args.control?.checkpoint();
+        emit({ level: "info", label: "Research", detail: "Running the deterministic research loop.", status: "running" });
+        // Run the WHOLE pipeline in the user's current tab: adopt it as the task's
+        // research tab up front so the SERP and every result page navigate this one
+        // tab instead of spawning new ones.
+        const workingTabId = currentPageContext?.tabId;
+        if (workingTabId !== undefined) {
+          setResearchTabId(workingTabId);
+        }
+        const research = await runResearchPath({
+          query: currentIntent,
+          searchQueries,
+          currentUrl: currentPageContext?.url,
+          workingTabId,
+          now: new Date().toISOString(),
+          fetchPage: fetchResearchPage,
+          onProgress: (message) => emit({ level: "info", label: "Research", detail: message, status: "running" }),
+          shouldStop: () => args.control?.signal?.aborted ?? false
+        });
+        warnings.push(...research.warnings);
+        log({
+          level: research.structuredSummary ? "info" : "warning",
+          label: "Research",
+          details: `Read ${research.visitedUrls.length} page(s); recalled ${research.recalledCount} section(s) from the corpus.`,
+          toolName: "research_loop",
+          actionLabel: "Research loop",
+          status: research.structuredSummary ? "completed" : "partial"
+        });
+        if (research.structuredSummary) {
+          // One pass, then synthesize. A thin result is a pipeline bug to fix, not
+          // a second model-gated pass.
+          accumulator = [accumulator, research.structuredSummary].filter(Boolean).join("\n\n");
+          missing = "";
+          break;
+        }
+        // The loop yielded nothing usable (no results, all dead/thin). Rather than
+        // dead-end at synthesis, fall through to the generic execute/gate loop as a
+        // graceful degrade — this is recovery, not a second research pass.
+        warnings.push(research.missing || "The research loop gathered no usable content.");
       }
 
       // EXECUTE (deterministic) + persist
@@ -357,7 +454,7 @@ export async function runPipeline(args: {
         priorAccumulator: accumulator,
         newSummary: roundSummary,
         activeWorkingFile: args.activeWorkingFile,
-        model,
+        model: pick("gate"),
         signal: args.control?.signal
       });
       accumulator = gate.accumulator;
@@ -387,7 +484,7 @@ export async function runPipeline(args: {
           priorAccumulator: accumulator,
           newSummary: grepSummary,
           activeWorkingFile: args.activeWorkingFile,
-          model,
+          model: pick("gate"),
           signal: args.control?.signal
         });
         accumulator = grepGate.accumulator;
@@ -417,7 +514,7 @@ export async function runPipeline(args: {
       blockedReason,
       engineGrounding,
       activeWorkingFile: args.activeWorkingFile,
-      model,
+      model: pick("synthesis"),
       onAnswerDelta: args.onAnswerDelta,
       signal: args.control?.signal
     });
@@ -440,7 +537,7 @@ export async function runPipeline(args: {
           history: args.history,
           answer: roundAnswer,
           accumulator,
-          model,
+          model: pick("followup"),
           signal: args.control?.signal
         });
         if (followup.kind === "proceed" && followup.text && proactiveRound < MAX_PROACTIVE_ROUNDS) {
@@ -481,7 +578,7 @@ export async function runPipeline(args: {
           answer: fullAnswer,
           capability: capabilityGap.capability,
           reason: capabilityGap.reason,
-          model,
+          model: pick("followup"),
           signal: args.control?.signal
         });
         if (detail) {
@@ -686,6 +783,14 @@ function readCachedSiteReconText(tabId: number | undefined): string | undefined 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Pull the search queries from a plan's search_web steps, in order. */
+function extractSearchQueries(plan: Plan): string[] {
+  return plan.steps
+    .filter((step) => step.tool === "search_web")
+    .map((step) => (typeof step.args.query === "string" ? step.args.query.trim() : ""))
+    .filter(Boolean);
 }
 
 async function synthesize(args: {

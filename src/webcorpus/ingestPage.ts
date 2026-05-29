@@ -177,6 +177,10 @@ export function ingestPage(
     capturedAt: now,
     visitCount: 0,
     components,
+    // Overlay capture maps the INTERACTION layer only; the research-content layer
+    // is filled by the deterministic research loop. writePage preserves any
+    // sections a prior research pass already wrote for this page.
+    contentSections: [],
     rawElementCount: capture.candidateCount,
     dedupedCount: rawComponents.length - components.length,
     warnings: []

@@ -23,6 +23,12 @@ import { buildSummary, isRecord, type FatToolResult, type FatToolStatus } from "
 export type SearchWebInput = {
   query: string;
   searchType?: "web" | "images";
+  /**
+   * Reuse this existing tab for the search instead of opening a new one. When set,
+   * the SERP is loaded by navigating this tab — the research path passes the
+   * user's current tab so the whole pipeline stays in one tab.
+   */
+  tabId?: number;
 };
 
 /** How many candidate links to surface to the model. A bounded shortlist. */
@@ -36,9 +42,10 @@ export async function runSearchWeb(input: SearchWebInput): Promise<FatToolResult
       query: input.query,
       searchType: input.searchType === "images" ? "images" : "web",
       includeSnapshot: true,
-      // Mine the results page in the background — the user only sees the result
-      // pages the model later opens, not the SERP itself.
-      background: true
+      // When a tab is supplied, reuse it (the research path keeps everything in
+      // the user's current tab). Otherwise mine the SERP in a background tab so
+      // the user only sees the result pages the loop later opens.
+      ...(input.tabId !== undefined ? { tabId: input.tabId } : { background: true })
     }
   });
 

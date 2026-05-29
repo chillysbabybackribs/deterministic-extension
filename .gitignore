@@ -47,3 +47,6 @@ chrome-profile/
 
 # Backend local state
 server/data/
+
+# Assistant runtime scratch output
+.assistant/

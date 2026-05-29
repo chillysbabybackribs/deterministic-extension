@@ -19,6 +19,7 @@ function page(pageId: string, componentCount: number): PageEntry {
       name: `c${i}`,
       searchText: `c${i}`
     })),
+    contentSections: [],
     rawElementCount: componentCount,
     dedupedCount: 0,
     warnings: []
