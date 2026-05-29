@@ -9,6 +9,9 @@
 import { makeId } from "../shared/id";
 import type { FileCorpus, FileSourceKind, FileUnit } from "./corpusTypes";
 import { buildIndex } from "./rankUnits";
+import { embedUnits, type EmbedTexts } from "./embedUnits";
+import { applyReusedEmbeddings, type EmbeddingReuseIndex } from "./reuseEmbeddings";
+import { EMBEDDING_DIMENSIONS } from "../embeddings/geminiEmbeddingClient";
 import { parseDelimited } from "./parsers/delimited";
 import { parseText } from "./parsers/text";
 import type { ParseResult } from "./parsers/types";
@@ -84,7 +87,11 @@ export function parseTextContentToUnits(fileName: string, text: string): ParseRe
 
 export async function ingestFile(
   file: File,
-  onProgress?: (progress: IngestProgress) => void
+  onProgress?: (progress: IngestProgress) => void,
+  /** Injected batch embedder; when present, units get meaning-vectors for semantic search. */
+  embed?: EmbedTexts,
+  /** Prior embeddings to reuse for unchanged content (skips re-embedding on reconnect). */
+  reuse?: EmbeddingReuseIndex
 ): Promise<FileCorpus> {
   const kind = detectSourceKind(file.name, file.type);
   if (!kind) {
@@ -105,7 +112,7 @@ export async function ingestFile(
   }
 
   const fileId = makeId("corpus");
-  const units: FileUnit[] = parsedUnits.map((unit, index) => ({
+  const baseUnits: FileUnit[] = parsedUnits.map((unit, index) => ({
     id: `${fileId}:u${index}`,
     ordinal: index,
     kind: unit.kind,
@@ -114,7 +121,14 @@ export async function ingestFile(
     structure: unit.structure
   }));
 
-  onProgress?.({ phase: "Indexing…" });
+  onProgress?.({ phase: embed ? "Embedding…" : "Indexing…" });
+  const { units: seeded } = applyReusedEmbeddings(baseUnits, reuse, EMBEDDING_DIMENSIONS);
+  const embedded = await embedUnits(seeded, embed);
+  const units = embedded.units;
+  if (embedded.warning) {
+    warnings.push(embedded.warning);
+  }
+
   const index = buildIndex(units);
 
   return {

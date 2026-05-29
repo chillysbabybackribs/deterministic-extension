@@ -55,6 +55,12 @@ export type FileUnit = {
   text: string;
   address: FileUnitAddress;
   structure: FileUnitStructure;
+  /**
+   * Meaning-vector for semantic retrieval, computed once at ingest (Gemini).
+   * Optional: corpora built before embeddings, or units ingested without an API
+   * key, simply omit it and fall back to lexical ranking. See embeddingRanker.
+   */
+  embedding?: number[];
 };
 
 /**

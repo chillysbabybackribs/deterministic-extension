@@ -46,9 +46,17 @@ describe("query_file fat tool", () => {
     const result = await runQueryFile({ query: "growth", broaden: true });
     expect(result.status).toBe("success");
     expect(result.summary).toContain("report.pdf");
-    expect(result.summary).toContain("3 matching");
+    expect(result.summary).toContain("3 keyword match(es)");
     expect(result.summary).toContain("broadened");
     expect(result.summary).toContain("the relevant passage");
+  });
+
+  it("reports semantic mode when the corpus query ran semantically", async () => {
+    mockExec.mockResolvedValue(
+      exec({ active: true, fileName: "proj", sourceType: "folder", matchCount: 5, mode: "semantic", rendered: "[src/x.ts] code" })
+    );
+    const result = await runQueryFile({ query: "how is auth handled" });
+    expect(result.summary).toContain("5 semantic match(es)");
   });
 
   it("flags zero matches as partial with a broaden hint", async () => {

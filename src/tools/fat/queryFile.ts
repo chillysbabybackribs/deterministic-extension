@@ -53,11 +53,12 @@ export async function runQueryFile(input: QueryFileInput = {}): Promise<FatToolR
   const matchCount = typeof out.matchCount === "number" ? out.matchCount : 0;
   const sourceType = out.sourceType === "folder" ? "folder" : "file";
   const building = out.building === true;
+  const mode = out.mode === "semantic" ? "semantic" : "keyword";
   const label = sourceType === "folder" ? `Folder ${fileName}` : `File ${fileName}`;
   const buildingNote = building ? " (index still building — a later query may surface more)" : "";
 
   const summary = buildSummary([
-    `${label} — ${matchCount} matching unit(s) for this query${input.broaden ? " (broadened)" : ""}.${buildingNote}`,
+    `${label} — ${matchCount} ${mode} match(es) for this query${input.broaden ? " (broadened)" : ""}.${buildingNote}`,
     rendered
   ]);
 

@@ -133,7 +133,10 @@ export const DEFAULT_IGNORED_WORKSPACE_DIRECTORIES = [
   "coverage",
   ".next",
   ".turbo",
-  ".cache"
+  ".cache",
+  // The assistant's own runtime scratch output — large extraction dumps that
+  // would otherwise be embedded and ranked as if they were source content.
+  ".assistant"
 ] as const;
 
 const DEFAULT_IGNORED_DIRECTORY_SET = new Set<string>(DEFAULT_IGNORED_WORKSPACE_DIRECTORIES);

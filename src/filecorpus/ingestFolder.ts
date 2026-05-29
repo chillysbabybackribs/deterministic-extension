@@ -15,6 +15,9 @@ import { makeId } from "../shared/id";
 import type { FileCorpus, FileUnit } from "./corpusTypes";
 import { MAX_UNITS, MAX_UNIT_CHARS, parseTextContentToUnits } from "./ingest";
 import { buildIndex, extendIndex } from "./rankUnits";
+import { embedUnits, type EmbedTexts } from "./embedUnits";
+import { applyReusedEmbeddings, type EmbeddingReuseIndex } from "./reuseEmbeddings";
+import { EMBEDDING_DIMENSIONS } from "../embeddings/geminiEmbeddingClient";
 
 export type FolderTextFile = { path: string; name: string; text: string };
 
@@ -58,6 +61,14 @@ export type IngestFolderArgs = {
   signal?: AbortSignal;
   /** Called with the growing corpus when it should be persisted + reflected in UI. */
   onUpdate?: (corpus: FileCorpus) => void | Promise<void>;
+  /**
+   * Injected batch embedder; when present, units get meaning-vectors as they
+   * trickle in, so semantic search becomes available as the folder fills. The
+   * initial slice is embedded synchronously so the first query is semantic too.
+   */
+  embed?: EmbedTexts;
+  /** Prior embeddings to reuse for unchanged content (skips re-embedding on reconnect). */
+  reuse?: EmbeddingReuseIndex;
 };
 
 /**
@@ -90,6 +101,32 @@ export async function ingestFolder(args: IngestFolderArgs): Promise<{ initial: F
     return fileUnits.length;
   };
 
+  let embedWarned = false;
+  // Embed the units in [from, units.length) and write vectors back into the live
+  // array in place. Reused vectors (unchanged content from a prior corpus) are
+  // applied first and cost no API call; only the remainder hit the embedder.
+  // Never throws — a failed/absent embedder leaves units lexical and records one
+  // warning. Keeps the trickle resilient batch-to-batch.
+  const embedRange = async (from: number): Promise<void> => {
+    if (from >= units.length) {
+      return;
+    }
+    const slice = units.slice(from);
+    // Reuse first — fills vectors for unchanged units, even when no embedder is set.
+    const { units: seeded } = applyReusedEmbeddings(slice, args.reuse, EMBEDDING_DIMENSIONS);
+    const result = args.embed ? await embedUnits(seeded, args.embed) : { units: seeded, embedded: 0, warning: undefined };
+    for (let i = 0; i < slice.length; i += 1) {
+      const vector = result.units[i].embedding;
+      if (vector) {
+        units[from + i] = { ...units[from + i], embedding: vector };
+      }
+    }
+    if (result.warning && !embedWarned) {
+      embedWarned = true;
+      warnings.push(result.warning);
+    }
+  };
+
   const makeCorpus = (building: boolean): FileCorpus => ({
     fileId,
     fileName: args.rootName,
@@ -114,6 +151,8 @@ export async function ingestFolder(args: IngestFolderArgs): Promise<{ initial: F
   ) {
     ingestNextFile();
   }
+  // Embed the first slice before snapshotting so the very first query is semantic.
+  await embedRange(0);
   // The returned `initial` is a STABLE SNAPSHOT of the first slice (its own units
   // array + index), so callers can read it without it mutating under them while
   // the trickle grows the live corpus below.
@@ -129,12 +168,16 @@ export async function ingestFolder(args: IngestFolderArgs): Promise<{ initial: F
       if (args.signal?.aborted) {
         break;
       }
+      const batchStart = units.length;
       for (let i = 0; i < TRICKLE_BATCH_FILES && fileCursor < files.length && units.length < MAX_UNITS; i += 1) {
         const before = units.length;
         ingestNextFile();
         extendIndex(corpus.index, units.slice(before));
         sincePersist += 1;
       }
+      // Embed the units added this batch (in place on the live array) so vectors
+      // fill in alongside the index as the folder trickles in.
+      await embedRange(batchStart);
       corpus.unitCount = units.length;
       corpus.fileCount = fileCursor;
       corpus.progress = { filesDone: fileCursor, filesTotal: files.length };

@@ -27,7 +27,9 @@ import {
   writeWorkspaceFile
 } from "../filesystem/workspaceStore";
 import { getActiveCorpus } from "../filecorpus/corpusStore";
-import { formatRankedUnitsForModel, lexicalRanker } from "../filecorpus/rankUnits";
+import { runRetrieval } from "../filecorpus/retrievalPipeline";
+import { embedQuery, hasGeminiApiKey } from "../embeddings/geminiEmbeddingClient";
+import { loadSettings } from "../settings/settingsStore";
 import { waitForTabComplete } from "./chromeTabs";
 import type { BrowserToolName } from "./browserToolList";
 import {
@@ -1530,18 +1532,36 @@ async function queryCorpus(input: Record<string, unknown>): Promise<ToolRuntimeR
 
   const query = asString(input.query, "");
   const broaden = asBoolean(input.broaden, false);
-  const ranked = await lexicalRanker.rank(corpus, query, {
-    limit: broaden ? 16 : 8,
-    neighborRadius: broaden ? 2 : 1
-  });
-  const matchCount = ranked.filter((item) => !item.pulledAsNeighbor).length;
-  const rendered = formatRankedUnitsForModel(ranked);
+
+  // Embed the query with the SAME model/dimension as the corpus (Gemini), so
+  // semantic ranking compares like-for-like. The pipeline falls back to lexical
+  // when there is no key, the embed fails, or the corpus has no vectors.
+  const settings = await loadSettings();
+  const result = await runRetrieval(
+    corpus,
+    query,
+    async () => {
+      if (!hasGeminiApiKey(settings)) {
+        return undefined;
+      }
+      return embedQuery({ settings, text: query });
+    },
+    { broaden }
+  );
+
   const isFolder = corpus.sourceType === "folder";
   const sourceLabel = isFolder
     ? `folder "${corpus.fileName}" (${corpus.fileCount ?? 0} files)`
     : `file ${corpus.fileName}`;
   const buildingNote = corpus.building
     ? " The folder index is still building, so a later query may surface more."
+    : "";
+  const modeNote = result.mode === "semantic" ? " (semantic)" : " (keyword)";
+  // Calibration readout: surface the real similarity distribution so the relevance
+  // thresholds can be tuned from data (see embeddingRanker DEFAULT_OPTIONS).
+  const d = result.distribution;
+  const calibrationNote = d
+    ? ` [sim top ${d.top}, median ${d.median}, min ${d.min}; ${d.aboveFloor}/${d.comparable} above floor, ${d.kept} kept]`
     : "";
 
   return {
@@ -1551,15 +1571,17 @@ async function queryCorpus(input: Record<string, unknown>): Promise<ToolRuntimeR
       fileName: corpus.fileName,
       sourceType: corpus.sourceType,
       building: corpus.building === true,
-      matchCount,
-      rendered
+      matchCount: result.matchCount,
+      mode: result.mode,
+      distribution: result.distribution,
+      rendered: result.rendered
     },
-    summary: `Working ${sourceLabel}: ${matchCount} matching unit(s).${buildingNote}`,
+    summary: `Working ${sourceLabel}: ${result.matchCount} matching unit(s)${modeNote}.${buildingNote}${calibrationNote}`,
     warnings: [],
     kind: "filesystem",
     eventType: "tool",
     visible: false,
-    evidenceItems: [makeValueEvidence("Working file", { fileName: corpus.fileName, matchCount }, `Queried ${corpus.fileName}`)]
+    evidenceItems: [makeValueEvidence("Working file", { fileName: corpus.fileName, matchCount: result.matchCount, mode: result.mode }, `Queried ${corpus.fileName}`)]
   };
 }
 

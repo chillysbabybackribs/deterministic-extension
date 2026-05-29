@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearActiveCorpus,
   clearCorpusCache,
+  embedRemainingActiveCorpus,
   getActiveCorpus,
   getActiveCorpusStatus,
   getCorpus,
@@ -169,5 +170,38 @@ describe("corpusStore", () => {
     const grown = await getActiveCorpus();
     expect(grown?.fileCount).toBe(1200);
     expect(grown?.building).toBe(false);
+  });
+
+  it("embedRemainingActiveCorpus tops up only the un-embedded units and persists", async () => {
+    const corpus: FileCorpus = {
+      ...makeCorpus("topup", "proj"),
+      unitCount: 2,
+      units: [
+        { id: "topup:u0", ordinal: 0, kind: "paragraph", text: "already", address: {}, structure: {}, embedding: [9, 9] },
+        { id: "topup:u1", ordinal: 1, kind: "paragraph", text: "missing", address: {}, structure: {} }
+      ]
+    };
+    await putCorpus(corpus);
+    await setActiveCorpus("topup");
+
+    const embed = vi.fn(async (texts: string[]) => texts.map(() => [1, 1]));
+    const result = await embedRemainingActiveCorpus(embed);
+
+    expect(embed).toHaveBeenCalledWith(["missing"]); // already-embedded unit is not re-sent
+    expect(result.newlyEmbedded).toBe(1);
+    expect(result.embeddedUnits).toBe(2);
+    expect(result.unitCount).toBe(2);
+
+    // The persisted corpus now has both vectors.
+    const reloaded = await getCorpus("topup");
+    expect(reloaded?.units[0].embedding).toEqual([9, 9]);
+    expect(reloaded?.units[1].embedding).toEqual([1, 1]);
+  });
+
+  it("embedRemainingActiveCorpus is a no-op with no active corpus", async () => {
+    const embed = vi.fn(async () => []);
+    const result = await embedRemainingActiveCorpus(embed);
+    expect(embed).not.toHaveBeenCalled();
+    expect(result).toEqual({ newlyEmbedded: 0, embeddedUnits: 0, unitCount: 0 });
   });
 });

@@ -12,6 +12,7 @@
  */
 
 import type { ActiveWorkingFileDescriptor, FileCorpus } from "./corpusTypes";
+import { embedUnits, type EmbedTexts } from "./embedUnits";
 
 const DB_NAME = "ohmygod.filecorpus";
 const DB_VERSION = 1;
@@ -25,9 +26,17 @@ type ActivePointer = { key: typeof ACTIVE_KEY; fileId: string };
 
 let cachedActiveCorpus: StoredCorpus | undefined;
 
+/** Embedding coverage of a corpus — how many units carry a meaning-vector, and the vector size. */
+export type CorpusEmbeddingStatus = {
+  /** Units that have an embedding vector. */
+  embeddedUnits: number;
+  /** Vector dimension (0 when nothing is embedded yet). */
+  dimensions: number;
+};
+
 export type ActiveCorpusStatus =
   | { active: false }
-  | ({ active: true } & ActiveWorkingFileDescriptor);
+  | ({ active: true; embeddings: CorpusEmbeddingStatus } & ActiveWorkingFileDescriptor);
 
 function isSupported(): boolean {
   return "indexedDB" in globalThis;
@@ -145,7 +154,22 @@ export async function getActiveCorpusStatus(): Promise<ActiveCorpusStatus> {
   if (!corpus) {
     return { active: false };
   }
-  return { active: true, ...activeDescriptorFromCorpus(corpus) };
+  return { active: true, ...activeDescriptorFromCorpus(corpus), embeddings: embeddingStatusFromCorpus(corpus) };
+}
+
+/** Count embedded units + vector size, so the settings readout can show retrieval mode. */
+export function embeddingStatusFromCorpus(corpus: FileCorpus): CorpusEmbeddingStatus {
+  let embeddedUnits = 0;
+  let dimensions = 0;
+  for (const unit of corpus.units) {
+    if (unit.embedding && unit.embedding.length) {
+      embeddedUnits += 1;
+      if (!dimensions) {
+        dimensions = unit.embedding.length;
+      }
+    }
+  }
+  return { embeddedUnits, dimensions };
 }
 
 export function activeDescriptorFromCorpus(corpus: FileCorpus): ActiveWorkingFileDescriptor {
@@ -158,6 +182,42 @@ export function activeDescriptorFromCorpus(corpus: FileCorpus): ActiveWorkingFil
     building: corpus.building,
     progress: corpus.progress,
     ingestedAt: corpus.ingestedAt
+  };
+}
+
+export type EmbedRemainingResult = {
+  /** Units that gained a vector in this pass. */
+  newlyEmbedded: number;
+  /** Total embedded after the pass. */
+  embeddedUnits: number;
+  /** Total units in the corpus. */
+  unitCount: number;
+  warning?: string;
+};
+
+/**
+ * Top up embedding coverage on the ACTIVE corpus: embed only the units still
+ * missing a vector, then persist. Idempotent (embedUnits skips already-embedded
+ * units), so it safely resumes after a throttle stall without a full reconnect.
+ * Powers the "Embed remaining" button in settings.
+ */
+export async function embedRemainingActiveCorpus(embed: EmbedTexts): Promise<EmbedRemainingResult> {
+  const corpus = await getActiveCorpus();
+  if (!corpus) {
+    return { newlyEmbedded: 0, embeddedUnits: 0, unitCount: 0 };
+  }
+  const before = embeddingStatusFromCorpus(corpus).embeddedUnits;
+  const result = await embedUnits(corpus.units, embed);
+  if (result.embedded > 0) {
+    const next: FileCorpus = { ...corpus, units: result.units };
+    await putCorpus(next);
+  }
+  const status = embeddingStatusFromCorpus({ ...corpus, units: result.units });
+  return {
+    newlyEmbedded: status.embeddedUnits - before,
+    embeddedUnits: status.embeddedUnits,
+    unitCount: corpus.unitCount,
+    warning: result.warning
   };
 }
 

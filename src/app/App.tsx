@@ -42,9 +42,13 @@ import { planComponentTemplate } from "../tools/componentTemplatePlanner";
 import type { ActiveWorkingFileDescriptor } from "../filecorpus/corpusTypes";
 import { ingestFile } from "../filecorpus/ingest";
 import { ingestFolder, TrickleController } from "../filecorpus/ingestFolder";
+import type { EmbedTexts } from "../filecorpus/embedUnits";
+import { embedTexts, hasGeminiApiKey } from "../embeddings/geminiEmbeddingClient";
+import { buildReuseIndex } from "../filecorpus/reuseEmbeddings";
 import {
   activeDescriptorFromCorpus,
   clearActiveCorpus,
+  getActiveCorpus,
   getActiveCorpusStatus,
   putCorpus,
   setActiveCorpus
@@ -605,6 +609,20 @@ export function App({ authControls }: AppProps = {}) {
     }
   }
 
+  /**
+   * Build the ingest-time embedder from current settings, or undefined when no
+   * Gemini key is set (ingest then stays lexical — graceful degrade). The key is
+   * captured at connect time, so a folder trickle keeps embedding with the key it
+   * started with even if settings change mid-build.
+   */
+  function makeEmbedder(): EmbedTexts | undefined {
+    if (!hasGeminiApiKey(settings)) {
+      return undefined;
+    }
+    const captured = settings;
+    return (texts: string[]) => embedTexts({ settings: captured, texts });
+  }
+
   async function handleAttachWorkingFile() {
     if (busy || workingFileBusy) {
       return;
@@ -647,7 +665,9 @@ export function App({ authControls }: AppProps = {}) {
     trickleControllerRef.current.abort(); // a new file source supersedes any folder trickle
     setWorkingFileBusy(true);
     try {
-      const corpus = await ingestFile(file);
+      // Reuse vectors for unchanged content from whatever was last indexed.
+      const reuse = buildReuseIndex(await getActiveCorpus());
+      const corpus = await ingestFile(file, undefined, makeEmbedder(), reuse);
       await putCorpus(corpus);
       await setActiveCorpus(corpus.fileId);
       setActiveWorkingFile(activeDescriptorFromCorpus(corpus));
@@ -669,11 +689,16 @@ export function App({ authControls }: AppProps = {}) {
     setWorkingFileError(undefined);
     try {
       const collected = await collectWorkspaceTextFiles({ maxFiles: 2000, maxBytesPerFile: 1_000_000 });
+      // Reuse vectors for unchanged content from the prior corpus (read before
+      // this ingest overwrites the active pointer) — reconnects skip re-embedding.
+      const reuse = buildReuseIndex(await getActiveCorpus());
       const { initial, done } = await ingestFolder({
         files: collected.files,
         rootName: collected.rootName,
         collectionWarnings: collected.warnings,
         signal,
+        embed: makeEmbedder(),
+        reuse,
         onUpdate: async (corpus) => {
           if (signal.aborted) {
             return;
@@ -883,6 +908,7 @@ export function App({ authControls }: AppProps = {}) {
           activity={settings.dev.showDebugLogs ? activity : activity.filter((entry) => entry.level !== "debug")}
           evidence={latestEvidence}
           progressEvents={visibleProgressEvents}
+          thinkingEvents={progressEvents}
           progressOpen={progressOpen}
           generatedPreviewPlan={generatedPreviewPlan}
           showEvidence={settings.dev.showEvidencePreview}

@@ -12,9 +12,15 @@ const markdownComponents: Components = {
       return <span>{children}</span>;
     }
 
+    // Keep links tasteful: when the visible text is just the raw URL (the model
+    // often emits bare links), show a clean label — host + path, no scheme, no
+    // "www.", no trailing slash — instead of the noisy https://…. Descriptive
+    // link text the model wrote is left untouched.
+    const display = childrenIsBareUrl(children, safeHref) ? prettyUrlLabel(safeHref) : children;
+
     return (
       <a href={safeHref} rel="noreferrer" target="_blank" title={safeHref}>
-        {children}
+        {display}
       </a>
     );
   },
@@ -94,6 +100,46 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
       </ReactMarkdown>
     </div>
   );
+}
+
+/** True when the link's visible text is just the URL itself (a bare/autolinked URL). */
+export function childrenIsBareUrl(children: unknown, href: string): boolean {
+  const text = childrenToText(children).trim();
+  if (!text) {
+    return false;
+  }
+  const stripScheme = (s: string) => s.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  return text === href || stripScheme(text) === stripScheme(href);
+}
+
+/** Flatten React children to plain text (only the simple string/array cases markdown produces). */
+function childrenToText(children: unknown): string {
+  if (typeof children === "string") {
+    return children;
+  }
+  if (Array.isArray(children)) {
+    return children.map(childrenToText).join("");
+  }
+  return "";
+}
+
+/**
+ * Clean, human-readable label for a URL: drop the scheme and a leading "www.",
+ * drop a bare trailing slash, and keep host (+ path) so it stays informative
+ * without the https:// noise. mailto: shows just the address.
+ */
+export function prettyUrlLabel(href: string): string {
+  try {
+    const url = new URL(href);
+    if (url.protocol === "mailto:") {
+      return url.pathname;
+    }
+    const host = url.hostname.replace(/^www\./i, "");
+    const path = url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "");
+    return `${host}${path}${url.search}`;
+  } catch {
+    return href.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  }
 }
 
 function sanitizeHref(href: string): string | undefined {

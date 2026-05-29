@@ -7,6 +7,12 @@ import {
   labelForChatModel
 } from "../../settings/modelSettings";
 import type { WebCorpusDescriptor } from "../../webcorpus/webCorpusTypes";
+import {
+  embedRemainingActiveCorpus,
+  getActiveCorpusStatus,
+  type ActiveCorpusStatus
+} from "../../filecorpus/corpusStore";
+import { embedTexts, hasGeminiApiKey } from "../../embeddings/geminiEmbeddingClient";
 
 export type SettingsPanelProps = {
   settings: AppSettings;
@@ -172,7 +178,8 @@ export function SettingsPanel({
             }
           />
           <div className="settings-note">
-            Stored locally in this Chrome profile. Used only for the Gemini master router, not chat responses.
+            Stored locally in this Chrome profile. Used for the Gemini master router and for semantic corpus
+            search (embedding your connected files/pages so you can search them by meaning). Not used for chat responses.
           </div>
         </div>
 
@@ -280,6 +287,8 @@ export function SettingsPanel({
               />
             </div>
 
+            <ConnectedSourceReadout settings={settings} />
+
             <MappedSitesReadout />
           </div>
         </details>
@@ -319,7 +328,7 @@ function MappedSitesReadout() {
 
   return (
     <div className="settings-row">
-      <label>Mapped sites</label>
+      <label>Mapped sites (web corpus)</label>
       <button type="button" className="settings-panel-action" onClick={refresh}>
         Refresh
       </button>
@@ -350,6 +359,131 @@ function MappedSitesReadout() {
               </ul>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Read-only readout of the connected file/folder corpus. Reads straight from
+ * panel IndexedDB (where the file corpus lives — it is NOT in the service
+ * worker), so you can see exactly what was saved: the source, how many units
+ * were indexed, build progress, and the retrieval mode (semantic when units
+ * carry embeddings, lexical otherwise). This is the "what gets saved and how"
+ * view for the working source.
+ */
+function ConnectedSourceReadout({ settings }: { settings: AppSettings }) {
+  const [status, setStatus] = useState<ActiveCorpusStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [embedBusy, setEmbedBusy] = useState(false);
+  const [embedNote, setEmbedNote] = useState<string | null>(null);
+  const hasGeminiKey = hasGeminiApiKey(settings);
+
+  function refresh() {
+    setError(null);
+    getActiveCorpusStatus()
+      .then(setStatus)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "Unavailable"));
+  }
+
+  function embedRemaining() {
+    setEmbedBusy(true);
+    setEmbedNote(null);
+    embedRemainingActiveCorpus((texts) => embedTexts({ settings, texts }))
+      .then((result) => {
+        setEmbedNote(
+          result.warning
+            ? result.warning
+            : `Embedded ${result.newlyEmbedded.toLocaleString()} more — ${result.embeddedUnits.toLocaleString()}/${result.unitCount.toLocaleString()} now covered.`
+        );
+        refresh();
+      })
+      .catch((e: unknown) => setEmbedNote(e instanceof Error ? e.message : "Embedding failed."))
+      .finally(() => setEmbedBusy(false));
+  }
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const needsTopUp =
+    status?.active &&
+    hasGeminiKey &&
+    status.unitCount > 0 &&
+    status.embeddings.embeddedUnits < status.unitCount &&
+    !status.building;
+
+  const embeddedAll =
+    status?.active && status.unitCount > 0 && status.embeddings.embeddedUnits >= status.unitCount;
+  const embeddedSome = status?.active && status.embeddings.embeddedUnits > 0;
+  const retrievalMode = embeddedSome
+    ? embeddedAll
+      ? "semantic (vectors)"
+      : "semantic + lexical (partial)"
+    : "lexical (keyword)";
+
+  return (
+    <div className="settings-row">
+      <label>Connected source (file corpus)</label>
+      <button type="button" className="settings-panel-action" onClick={refresh}>
+        Refresh
+      </button>
+      {error ? (
+        <div className="settings-note">Could not read source: {error}</div>
+      ) : status === null ? (
+        <div className="settings-note">Loading…</div>
+      ) : !status.active ? (
+        <div className="settings-note">
+          No file or folder connected. Use the attach control in the header to connect one; it is
+          indexed once into a searchable corpus stored locally in this Chrome profile.
+        </div>
+      ) : (
+        <div className="settings-note" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ fontWeight: 600 }}>
+            {status.sourceType === "folder" ? "📁 " : "📄 "}
+            {status.fileName}
+            {status.sourceKind ? ` (${status.sourceKind})` : ""}
+          </div>
+          <div>
+            {status.unitCount.toLocaleString()} indexed unit{status.unitCount === 1 ? "" : "s"}
+            {status.sourceType === "folder" && status.fileCount !== undefined
+              ? ` across ${status.fileCount.toLocaleString()} file${status.fileCount === 1 ? "" : "s"}`
+              : ""}
+          </div>
+          {status.building && status.progress ? (
+            <div>
+              Indexing… {status.progress.filesDone.toLocaleString()}
+              {status.progress.filesTotal ? ` / ${status.progress.filesTotal.toLocaleString()}` : ""} files
+            </div>
+          ) : null}
+          <div>
+            Retrieval: <strong>{retrievalMode}</strong>
+            {embeddedSome
+              ? ` — ${status.embeddings.embeddedUnits.toLocaleString()}/${status.unitCount.toLocaleString()} units embedded${
+                  status.embeddings.dimensions ? `, ${status.embeddings.dimensions}-dim` : ""
+                }`
+              : hasGeminiKey
+                ? " — add embeddings to enable semantic search (next reconnect)"
+                : " — add a Gemini API key to enable semantic search"}
+          </div>
+          {needsTopUp ? (
+            <button
+              type="button"
+              className="settings-panel-action"
+              onClick={embedRemaining}
+              disabled={embedBusy}
+              style={{ alignSelf: "flex-start" }}
+            >
+              {embedBusy
+                ? "Embedding…"
+                : `Embed remaining ${(status.unitCount - status.embeddings.embeddedUnits).toLocaleString()} units`}
+            </button>
+          ) : null}
+          {embedNote ? <div style={{ opacity: 0.85 }}>{embedNote}</div> : null}
+          {status.ingestedAt ? (
+            <div style={{ opacity: 0.7 }}>Indexed {new Date(status.ingestedAt).toLocaleString()}</div>
+          ) : null}
         </div>
       )}
     </div>
