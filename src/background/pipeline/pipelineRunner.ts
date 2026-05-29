@@ -43,6 +43,7 @@ import { runInteractionFastPath } from "./interactionFastPath";
 import { getCachedSiteRecon } from "../reconCache";
 import { renderSiteRecon } from "../../tools/siteRecon";
 import { buildPagePlanningContext } from "./pagePlanningContext";
+import { routePrompt } from "./router";
 
 const MAX_ITERATIONS = 5;
 const MAX_DEFERRED_PLAN_RESUMES = 4;
@@ -125,6 +126,35 @@ export async function runPipeline(args: {
   let prefetchedBeforeObservation: PrefetchedBeforeObservation | undefined;
 
   try {
+    // FRONT-DOOR ROUTER: one cheap classify call decides chat vs tools. A `chat`
+    // verdict answers directly from the model — no overlay, no planner, no
+    // pipeline. Skipped when the turn already implies tools: an engine question
+    // (grounded answer), an attached working file, or captured page context.
+    // Default is tools, so a misroute never strands a real task.
+    await args.control?.checkpoint();
+    const impliesTools = isEngineQuestion(args.userMessage) || !!args.activeWorkingFile || !!args.activeCaptureContext;
+    if (!impliesTools) {
+      const route = await routePrompt({
+        userMessage: args.userMessage,
+        settings: args.settings,
+        history: args.history,
+        signal: args.control?.signal
+      });
+      log({ level: "info", label: "Route", details: `Decision: ${route}`, toolName: "router", actionLabel: "Router", status: "completed" });
+      if (route === "chat") {
+        const answer = await answerChat({
+          userMessage: args.userMessage,
+          settings: args.settings,
+          history: args.history,
+          model,
+          signal: args.control?.signal,
+          onAnswerDelta: args.onAnswerDelta
+        });
+        log({ level: "info", label: "Synthesis", details: "Chat answer ready (no tools).", toolName: "chat", actionLabel: "Chat", status: "completed" });
+        return { ok: true, answer, activity, evidence: emptyEvidence(args.userMessage, warnings) };
+      }
+    }
+
     // INTERACTION FAST-PATH (pipeline inversion): for page-interaction prompts,
     // capture the overlay FIRST, rank the prompt over the element corpus, and
     // either fire a confident read-only action with NO model, or fall through to
@@ -700,6 +730,42 @@ async function synthesize(args: {
     return extractText(r.content);
   }
   const r = await callAnthropicMessage({ settings: args.settings, model: args.model, system: SYNTHESIS_SYSTEM_PROMPT, messages, signal: args.signal });
+  return extractText(r.content);
+}
+
+const CHAT_SYSTEM_PROMPT = [
+  "You are a helpful, direct assistant inside a browser extension.",
+  "This prompt was routed as plain chat: answer it directly from your own knowledge or by transforming text the user provided.",
+  "Do NOT claim to have browsed, searched, opened pages, or read files — no tools were used.",
+  "Be concise and useful. Use the prior conversation for context when relevant."
+].join("\n");
+
+/** Direct model answer for prompts the router classified as `chat` (no tools). */
+async function answerChat(args: {
+  userMessage: string;
+  settings: AppSettings;
+  history?: ChatContextMessage[];
+  model?: string;
+  signal?: AbortSignal;
+  onAnswerDelta?: (delta: string) => void;
+}): Promise<string> {
+  const historyText = renderHistory(args.history);
+  const messages: AnthropicMessageParam[] = [{
+    role: "user",
+    content: [
+      historyText ? `Earlier in this conversation:\n${historyText}\n` : "",
+      `User prompt:\n${args.userMessage}`,
+      "",
+      "Answer now."
+    ].filter(Boolean).join("\n")
+  }];
+  if (args.onAnswerDelta) {
+    const r = await streamAnthropicMessage({
+      settings: args.settings, model: args.model, system: CHAT_SYSTEM_PROMPT, messages, signal: args.signal, onTextDelta: args.onAnswerDelta
+    });
+    return extractText(r.content);
+  }
+  const r = await callAnthropicMessage({ settings: args.settings, model: args.model, system: CHAT_SYSTEM_PROMPT, messages, signal: args.signal });
   return extractText(r.content);
 }
 

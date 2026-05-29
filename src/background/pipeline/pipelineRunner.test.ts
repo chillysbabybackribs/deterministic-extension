@@ -15,12 +15,17 @@ vi.mock("../../tools/elementOverlay", () => ({ hideAllActionableOverlays: vi.fn(
 // that exercise the inversion override it per-case.
 vi.mock("./interactionFastPath", () => ({ runInteractionFastPath: vi.fn(async () => ({ kind: "skip" })) }));
 vi.mock("./pagePlanningContext", () => ({ buildPagePlanningContext: vi.fn(async () => undefined) }));
+// Router defaults to "tools" so existing PLAN→GATE→SYNTHESIZE mock chains are
+// unaffected (the router would otherwise consume the first model call). The
+// router's own logic is unit-tested in router.test.ts.
+vi.mock("./router", () => ({ routePrompt: vi.fn(async () => "tools") }));
 
 import { callAnthropicMessage, streamAnthropicMessage } from "../../model/anthropicToolClient";
 import { executePlan } from "./executePlan";
 import { hideAllActionableOverlays } from "../../tools/elementOverlay";
 import { runInteractionFastPath } from "./interactionFastPath";
 import { buildPagePlanningContext } from "./pagePlanningContext";
+import { routePrompt } from "./router";
 import { runPipeline } from "./pipelineRunner";
 import { DEFAULT_APP_SETTINGS } from "../../settings/settingsStore";
 
@@ -29,6 +34,7 @@ const mockStream = vi.mocked(streamAnthropicMessage);
 const mockExec = vi.mocked(executePlan);
 const mockFastPath = vi.mocked(runInteractionFastPath);
 const mockPagePlanning = vi.mocked(buildPagePlanningContext);
+const mockRoute = vi.mocked(routePrompt);
 const mockHide = vi.mocked(hideAllActionableOverlays);
 
 function msg(text: string) {
@@ -50,6 +56,7 @@ afterEach(() => vi.clearAllMocks());
 beforeEach(() => {
   mockFastPath.mockResolvedValue({ kind: "skip" });
   mockPagePlanning.mockResolvedValue(undefined);
+  mockRoute.mockResolvedValue("tools");
   // Trailing default for callAnthropicMessage = a "none" follow-up, so the
   // post-answer follow-up call (after any non-blocked answer) resolves cleanly.
   // mockResolvedValueOnce chains for PLAN/GATE/SYNTHESIZE take precedence.
@@ -79,6 +86,28 @@ describe("runPipeline loop", () => {
     expect(mockModel).toHaveBeenCalledTimes(4);
     // understand_page runs the per-page overlay pass, so turn-end cleanup clears it.
     expect(mockHide).toHaveBeenCalledTimes(1);
+  });
+
+  it("chat route short-circuits: answers directly with no planner/executor", async () => {
+    mockRoute.mockResolvedValue("chat");
+    mockStream.mockImplementationOnce(async (a: { onTextDelta?: (d: string) => void }) => {
+      a.onTextDelta?.("Paris.");
+      return msg("Paris.");
+    });
+
+    const deltas: string[] = [];
+    const r = await runPipeline({
+      userMessage: "what is the capital of France",
+      settings,
+      onAnswerDelta: (d) => deltas.push(d)
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.answer).toBe("Paris.");
+    expect(deltas.join("")).toBe("Paris.");
+    // No planning, no execution, no per-iteration model calls.
+    expect(mockExec).not.toHaveBeenCalled();
+    expect(mockModel).not.toHaveBeenCalled();
   });
 
   it("threads activeWorkingFile through to the planner prompt (guards the capture-drop bug)", async () => {
