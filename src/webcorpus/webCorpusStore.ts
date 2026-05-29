@@ -147,6 +147,19 @@ export async function writePage(args: {
   return descriptorFromCorpus(next);
 }
 
+/** Every persisted site corpus, full records. One read; ranking happens in memory. */
+export async function getAllWebCorpora(): Promise<WebCorpus[]> {
+  if (!isSupported()) {
+    return [];
+  }
+  const db = await openDb();
+  const records = await idbRequest<StoredCorpus[]>(
+    db.transaction(SITE_STORE, "readonly").objectStore(SITE_STORE).getAll()
+  );
+  db.close();
+  return records.map(migrate);
+}
+
 /** All persisted site corpora, as compact descriptors. For the UI readout. */
 export async function listWebCorpusDescriptors(): Promise<WebCorpusDescriptor[]> {
   if (!isSupported()) {

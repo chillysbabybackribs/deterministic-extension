@@ -110,6 +110,26 @@ describe("createPagePlanningContext", () => {
     expect(context.logSummary).toContain("draft understand_page");
   });
 
+  it("includes recalled corpus targets in the planner packet when provided", () => {
+    const context = createPagePlanningContext({
+      userMessage: "go to checkout",
+      capture: capture([link(1, "Home", "https://example.com/", "/")]),
+      recalledText: "Relevant interaction targets recalled from this site's accumulated map:\n- link \"Checkout\" → /checkout (on https://example.com/cart)"
+    });
+    expect(context.plannerText).toContain("recalled from this site's accumulated map");
+    expect(context.plannerText).toContain("\"Checkout\" → /checkout");
+    // Surfaced in the activity log summary so it's visible in the Activity panel.
+    expect(context.logSummary).toContain("recalled 1 target(s) from site map");
+  });
+
+  it("omits the recall section when no recalled text is provided", () => {
+    const context = createPagePlanningContext({
+      userMessage: "What is this page?",
+      capture: capture([link(1, "Home", "https://example.com/", "/")])
+    });
+    expect(context.plannerText).not.toContain("recalled from this site's accumulated map");
+  });
+
   it("keeps ambiguous non-generic action requests as a shortlist without unsafe action draft", () => {
     const context = createPagePlanningContext({
       userMessage: "Click edit",

@@ -102,10 +102,40 @@ function isUtilityCandidate(url: string, title: string): boolean {
   return /\b(cached|similar pages|feedback|privacy|terms|settings)\b/.test(normalizedTitle);
 }
 
+/**
+ * Google's own properties/tools that show up among SERP links but are never the
+ * organic result the user searched for. Includes product subdomains like
+ * labs.google / maps.google.com / support.google.com that previously slipped
+ * through and got picked as a top candidate (the "Top results... 1. labs" case).
+ */
+const GOOGLE_PRODUCT_HOSTS = new Set([
+  "labs.google",
+  "labs.google.com",
+  "maps.google.com",
+  "translate.google.com",
+  "books.google.com",
+  "scholar.google.com",
+  "play.google.com",
+  "news.google.com",
+  "images.google.com",
+  "myactivity.google.com",
+  "support.google.com",
+  "accounts.google.com",
+  "policies.google.com"
+]);
+
 function isGoogleInfrastructureUrl(url: URL): boolean {
   const host = url.hostname.toLowerCase();
-  if (host === "accounts.google.com" || host === "policies.google.com" || host.endsWith(".gstatic.com")) {
+  if (GOOGLE_PRODUCT_HOSTS.has(host) || host.endsWith(".gstatic.com")) {
     return true;
   }
-  return host === "www.google.com" || host === "google.com";
+  // Any google.com search/utility surface (incl. www) is not an organic result.
+  if (host === "www.google.com" || host === "google.com") {
+    return true;
+  }
+  // labs.google and other "<product>.google" bare-TLD product hosts.
+  if (host === "google" || host.endsWith(".google")) {
+    return true;
+  }
+  return false;
 }

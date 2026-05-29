@@ -18,10 +18,14 @@ import type { ComponentEntry, WebCorpus } from "./webCorpusTypes";
 
 export type RankedComponent = {
   component: ComponentEntry;
+  /** The site the component belongs to. */
+  siteId: string;
   /** The page the component was mapped on, so the caller can locate it. */
   pageId: string;
   score: number;
   matchedTerms: string[];
+  /** True when this hit came from the site the user is currently on. */
+  currentSite: boolean;
 };
 
 /**
@@ -89,9 +93,65 @@ export function rankComponents(corpus: WebCorpus, query: string | string[], limi
     if (!matchedTerms.length) {
       continue;
     }
-    hits.push({ component, pageId, score, matchedTerms });
+    hits.push({ component, siteId: corpus.siteId, pageId, score, matchedTerms, currentSite: false });
   }
 
   hits.sort((a, b) => b.score - a.score || a.component.ordinal - b.component.ordinal);
   return hits.slice(0, limit);
+}
+
+/**
+ * Rank across EVERY mapped site, merging current-site first. The rule (per the
+ * product principle): current-site hits weigh higher when present; if the
+ * current site has none, other sites are first-class; if nothing matches
+ * anywhere, the caller falls through to general search. Pure given the corpora,
+ * so the only IO cost is the single getAll the caller already paid.
+ *
+ * Scores from different corpora aren't directly comparable (each has its own
+ * idf), so we do NOT interleave by raw score — current-site hits are emitted
+ * first (ranked among themselves), then all other-site hits (ranked among
+ * themselves). No cap on other sites beyond the per-pool limit.
+ */
+export function rankAcrossSites(
+  corpora: WebCorpus[],
+  query: string | string[],
+  currentSiteId: string | undefined,
+  limitPerPool = 8
+): RankedComponent[] {
+  const current = corpora.find((c) => c.siteId === currentSiteId);
+  const others = corpora.filter((c) => c.siteId !== currentSiteId);
+
+  const currentHits = current
+    ? rankComponents(current, query, limitPerPool).map((h) => ({ ...h, currentSite: true }))
+    : [];
+
+  const otherHits = others
+    .flatMap((c) => rankComponents(c, query, limitPerPool))
+    .sort((a, b) => b.score - a.score || a.component.ordinal - b.component.ordinal)
+    .slice(0, limitPerPool);
+
+  return [...currentHits, ...otherHits];
+}
+
+/**
+ * Render ranked components into a compact, model-facing block for the planner.
+ * Each line carries the component's behavior, where it lives, and where it leads
+ * — drawn from the ACCUMULATED corpus (across all mapped pages of the site), not
+ * just the current capture. Returns an empty string when there are no hits, so
+ * callers can drop the section cleanly.
+ */
+export function formatRankedComponentsForPlanner(ranked: RankedComponent[]): string {
+  if (!ranked.length) {
+    return "";
+  }
+  const lines = ranked.map((hit) => {
+    const c = hit.component;
+    const label = c.label ?? (c.name || "(unnamed)");
+    const count = c.instanceCount > 1 ? ` ×${c.instanceCount}` : "";
+    const dest = c.destination ? ` → ${c.destination.pattern}` : "";
+    const desc = c.description ? ` — ${c.description}` : "";
+    const origin = hit.currentSite ? "" : " [other site]";
+    return `- ${c.kind} "${label}"${count}${dest} (on ${hit.pageId})${origin}${desc}`;
+  });
+  return ["Relevant interaction targets recalled from your accumulated site map:", ...lines].join("\n");
 }

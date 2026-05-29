@@ -25,6 +25,9 @@ import {
   type FastPathIntent
 } from "./interactionFastPath";
 import type { PlanStep } from "./planner";
+import { toSiteId } from "../../webcorpus/ingestPage";
+import { getAllWebCorpora } from "../../webcorpus/webCorpusStore";
+import { formatRankedComponentsForPlanner, rankAcrossSites } from "../../webcorpus/rankComponents";
 
 export type PagePlanningContext = {
   capture: OverlayCaptureResult;
@@ -49,13 +52,37 @@ export async function buildPagePlanningContext(args: {
   }
   return createPagePlanningContext({
     userMessage: args.userMessage,
-    capture
+    capture,
+    recalledText: await recallFromWebCorpus(args.userMessage, capture.url)
   });
+}
+
+/**
+ * Search the ACCUMULATED web corpus for interaction targets relevant to the
+ * prompt — across EVERY mapped site, merging current-site hits first. The
+ * current site weighs higher when it has matches; if it has none, other sites
+ * are first-class; if nothing matches anywhere, recall is empty and the planner
+ * falls through to the live capture + general pipeline. One IDB read, ranked in
+ * memory. Best-effort: any failure yields no recall.
+ */
+async function recallFromWebCorpus(userMessage: string, url: string): Promise<string> {
+  try {
+    const corpora = await getAllWebCorpora();
+    if (!corpora.length) {
+      return "";
+    }
+    const currentSiteId = toSiteId(url)?.siteId;
+    return formatRankedComponentsForPlanner(rankAcrossSites(corpora, userMessage, currentSiteId));
+  } catch {
+    return "";
+  }
 }
 
 export function createPagePlanningContext(args: {
   userMessage: string;
   capture: OverlayCaptureResult;
+  /** Optional packet of targets recalled from the accumulated site corpus. */
+  recalledText?: string;
 }): PagePlanningContext {
   const corpus = buildCorpus(args.capture);
   const intent = detectFastPathIntent(args.userMessage);
@@ -97,15 +124,22 @@ export function createPagePlanningContext(args: {
     representativeActions.length
       ? `Representative actionables:\n${representativeActions.map((candidate) => renderCandidate(candidate, { currentUrl: args.capture.url })).join("\n")}`
       : "",
+    args.recalledText ?? "",
     draft.description,
     "Planner instruction: validate this packet against the user prompt. If the draft workflow matches the request, copy/repair it into the JSON plan. If the target is ambiguous, use the candidate list instead of inventing a selector; only ask for more model help after deterministic execution cannot safely complete a provided step."
   ].filter(Boolean).join("\n\n");
+
+  const recalledCount = args.recalledText
+    ? args.recalledText.split("\n").filter((line) => line.startsWith("- ")).length
+    : 0;
 
   return {
     capture: args.capture,
     plannerText,
     draftSteps: draft.steps,
-    logSummary: `${args.capture.elements.length} actionable element(s) mapped${draft.steps.length ? `; draft ${draft.steps.map((step) => step.tool).join(" → ")}` : ""}.`
+    logSummary: `${args.capture.elements.length} actionable element(s) mapped${
+      draft.steps.length ? `; draft ${draft.steps.map((step) => step.tool).join(" → ")}` : ""
+    }${recalledCount ? `; recalled ${recalledCount} target(s) from site map` : ""}.`
   };
 }
 
